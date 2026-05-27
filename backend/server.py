@@ -19,7 +19,7 @@ from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
-from seed_data import CATEGORIES
+from seed_data import CATEGORIES, FAMILIES
 from content import READING_MATERIAL, AU_STATES, ACHIEVEMENTS
 
 ROOT_DIR = Path(__file__).parent
@@ -53,6 +53,8 @@ class User(BaseModel):
     auth_provider: str = "email"  # email | google
     plan: str = "free"  # guest | free | premium | pro
     is_admin: bool = False
+    state: Optional[str] = None  # AU state code (NSW/VIC/QLD/WA/SA/ACT/TAS/NT)
+    primary_category_id: Optional[str] = None  # e.g. "dkt_nsw" — user's main study target
     streak_days: int = 0
     last_streak_date: Optional[str] = None
     xp: int = 0
@@ -324,6 +326,8 @@ async def get_categories():
         out.append(
             {
                 "id": c["id"],
+                "family": c.get("family"),
+                "state": c.get("state"),
                 "name": c["name"],
                 "short_name": c["short_name"],
                 "description": c["description"],
@@ -335,7 +339,22 @@ async def get_categories():
                 "question_bank_size": await db.questions.count_documents({"category_id": c["id"]}),
             }
         )
-    return {"categories": out}
+    return {"categories": out, "families": FAMILIES}
+
+
+@api.get("/exams/families")
+async def get_families():
+    """Return categories grouped by family for the home/exams UI."""
+    cats = await get_categories()
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for fam in FAMILIES:
+        grouped[fam["id"]] = {**fam, "categories": []}
+    for c in cats["categories"]:
+        fid = c.get("family") or "other"
+        grouped.setdefault(fid, {"id": fid, "name": fid.title(), "icon": "library",
+                                  "color": "#666", "description": "", "categories": []})
+        grouped[fid]["categories"].append(c)
+    return {"families": list(grouped.values())}
 
 
 @api.get("/exams/{category_id}/questions")
@@ -646,6 +665,45 @@ async def change_plan(body: PlanChangeBody, authorization: Optional[str] = Heade
     return {"ok": True, "plan": body.plan}
 
 
+class ProfileUpdateBody(BaseModel):
+    state: Optional[str] = None
+    primary_category_id: Optional[str] = None
+    name: Optional[str] = None
+
+
+_VALID_AU_STATES = {"NSW", "VIC", "QLD", "WA", "SA", "ACT", "TAS", "NT"}
+
+
+@api.patch("/user/profile")
+async def update_profile(body: ProfileUpdateBody, authorization: Optional[str] = Header(None)):
+    """Update user state/territory, primary exam category and name."""
+    user = await get_current_user(authorization)
+    update: Dict[str, Any] = {}
+    if body.state is not None:
+        s = body.state.upper().strip()
+        if s not in _VALID_AU_STATES:
+            raise HTTPException(400, f"Invalid state — must be one of {sorted(_VALID_AU_STATES)}")
+        update["state"] = s
+        # Auto-pick a sensible default primary category if user's current target is a generic DKT
+        if not body.primary_category_id and (
+            not user.get("primary_category_id")
+            or user.get("primary_category_id", "").startswith("dkt_")
+        ):
+            update["primary_category_id"] = f"dkt_{s.lower()}"
+    if body.primary_category_id is not None:
+        valid_ids = {c["id"] for c in CATEGORIES}
+        if body.primary_category_id not in valid_ids:
+            raise HTTPException(400, "Invalid primary_category_id")
+        update["primary_category_id"] = body.primary_category_id
+    if body.name is not None and body.name.strip():
+        update["name"] = body.name.strip()
+    if not update:
+        return {"ok": True, "user": user}
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+    refreshed = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
+    return {"ok": True, "user": refreshed}
+
+
 # ---------- Routes: Admin ----------
 @api.get("/admin/analytics")
 async def admin_analytics(authorization: Optional[str] = Header(None)):
@@ -734,6 +792,20 @@ async def startup():
     await db.exam_attempts.create_index("created_at")
     await db.ai_usage.create_index([("user_id", 1), ("date", 1)])
 
+    # Migration: legacy "dkt" category → "dkt_nsw"
+    legacy_count = await db.questions.count_documents({"category_id": "dkt"})
+    if legacy_count > 0:
+        log.info(f"Migrating {legacy_count} legacy dkt questions → dkt_nsw")
+        await db.questions.update_many(
+            {"category_id": "dkt"}, {"$set": {"category_id": "dkt_nsw"}}
+        )
+        await db.exam_attempts.update_many(
+            {"category_id": "dkt"}, {"$set": {"category_id": "dkt_nsw"}}
+        )
+        await db.bookmarks.update_many(
+            {"category_id": "dkt"}, {"$set": {"category_id": "dkt_nsw"}}
+        )
+
     # Seed admin user (idempotent)
     for admin_email in ADMIN_EMAILS:
         existing = await db.users.find_one({"email": admin_email})
@@ -761,17 +833,33 @@ async def startup():
                 doc = {
                     "question_id": make_id("q"),
                     "category_id": cat["id"],
+                    "family": cat.get("family"),
                     "topic": q["topic"],
                     "difficulty": q["difficulty"],
-                    "state": q.get("state"),
+                    "state": q.get("state") or cat.get("state"),
                     "question": q["question"],
                     "options": q["options"],
                     "correct": q["correct"],
                     "explanation": q["explanation"],
+                    "tags": q.get("tags", []),
+                    "learning_objectives": q.get("learning_objectives", []),
                     "created_at": now(),
                 }
                 await db.questions.insert_one(doc)
             log.info(f"Seeded {len(cat['questions'])} questions for {cat['id']}")
+
+    # Backfill tags / learning_objectives / family on legacy docs
+    await db.questions.update_many(
+        {"tags": {"$exists": False}}, {"$set": {"tags": []}}
+    )
+    await db.questions.update_many(
+        {"learning_objectives": {"$exists": False}}, {"$set": {"learning_objectives": []}}
+    )
+    cat_to_family = {c["id"]: c.get("family") for c in CATEGORIES}
+    for cid, fam in cat_to_family.items():
+        await db.questions.update_many(
+            {"category_id": cid, "family": {"$exists": False}}, {"$set": {"family": fam}}
+        )
 
     log.info("Passaroo startup complete.")
 

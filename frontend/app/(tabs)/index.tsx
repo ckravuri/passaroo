@@ -43,6 +43,12 @@ export default function Home() {
     setRefreshing(false);
   };
 
+  const primaryCat = user?.primary_category_id || (user?.state ? `dkt_${user.state.toLowerCase()}` : "dkt_nsw");
+  const primaryCatInfo = cats.find((c) => c.id === primaryCat);
+  const featured = primaryCatInfo
+    ? [primaryCatInfo, ...cats.filter((c) => c.id !== primaryCat)]
+    : cats;
+
   return (
     <SafeAreaView style={styles.container} testID="home-screen" edges={["top"]}>
       <ScrollView
@@ -53,6 +59,17 @@ export default function Home() {
           <View style={{ flex: 1 }}>
             <Text style={styles.greeting}>G'day{user?.name ? `, ${user.name.split(" ")[0]}` : ""}!</Text>
             <Text style={styles.sub}>Let's smash today's study goal.</Text>
+            {user?.state && (
+              <TouchableOpacity
+                onPress={() => router.push({ pathname: "/select-state", params: { from: "settings" } })}
+                style={styles.statePill}
+                testID="state-pill"
+              >
+                <Ionicons name="location" size={12} color={colors.primaryDark} />
+                <Text style={styles.statePillText}>{user.state}</Text>
+                <Ionicons name="chevron-down" size={12} color={colors.primaryDark} />
+              </TouchableOpacity>
+            )}
           </View>
           <Image source={{ uri: IMAGES.mascot }} style={styles.avatar} resizeMode="contain" />
         </View>
@@ -81,9 +98,9 @@ export default function Home() {
 
         <Text style={styles.sectionTitle}>Quick actions</Text>
         <View style={styles.quickGrid}>
-          <QuickTile icon="library" label="Practice" color={colors.primary} onPress={() => router.push({ pathname: "/practice/[category]", params: { category: "dkt" } })} testID="quick-practice" />
+          <QuickTile icon="library" label="Practice" color={colors.primary} onPress={() => router.push({ pathname: "/practice/[category]", params: { category: primaryCat } })} testID="quick-practice" />
           <QuickTile icon="refresh" label="Retry Wrong" color={colors.wrong} onPress={() => router.push("/retry-wrong")} testID="quick-retry" />
-          <QuickTile icon="book" label="Reading" color={colors.primaryDark} onPress={() => router.push({ pathname: "/reading/[category]", params: { category: "dkt" } })} testID="quick-reading" />
+          <QuickTile icon="book" label="Reading" color={colors.primaryDark} onPress={() => router.push({ pathname: "/reading/[category]", params: { category: primaryCat } })} testID="quick-reading" />
           <QuickTile icon="albums" label="Flashcards" color={colors.premium} onPress={() => router.push("/flashcards")} testID="quick-flashcards" />
           <QuickTile icon="trophy" label="Achievements" color={colors.fire} onPress={() => router.push("/achievements")} testID="quick-achievements" />
           <QuickTile icon="podium" label="Leaderboard" color={colors.correct} onPress={() => router.push("/leaderboard")} testID="quick-leaderboard" />
@@ -93,19 +110,26 @@ export default function Home() {
 
         <Text style={styles.sectionTitle}>Choose your exam</Text>
         {loading && <Text style={styles.subtle}>Loading…</Text>}
-        {cats.map((c) => (
+        {featured.map((c) => (
           <TouchableOpacity
             key={c.id}
             testID={`exam-card-${c.id}`}
             activeOpacity={0.85}
-            style={[styles.examCard, { borderBottomColor: c.color }]}
+            style={[styles.examCard, { borderBottomColor: c.color }, c.id === primaryCat && styles.examCardFeatured]}
             onPress={() => router.push({ pathname: "/exam/[category]", params: { category: c.id } })}
           >
             <View style={[styles.iconBubble, { backgroundColor: c.color + "22" }]}>
               <Ionicons name={c.icon as any} size={30} color={c.color} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.examName}>{c.name}</Text>
+              <View style={styles.examTitleRow}>
+                <Text style={styles.examName} numberOfLines={1}>{c.name}</Text>
+                {c.id === primaryCat && (
+                  <View style={[styles.yoursPill, { backgroundColor: c.color }]}>
+                    <Text style={styles.yoursPillText}>Yours</Text>
+                  </View>
+                )}
+              </View>
               <Text style={styles.examMeta} numberOfLines={2}>{c.description}</Text>
               <Text style={styles.examChips}>
                 {c.total_questions_in_exam} Qs · {c.time_limit_minutes} min · {c.question_bank_size} in bank
@@ -174,6 +198,16 @@ const styles = StyleSheet.create({
   statValue: { ...typography.h3, fontSize: 20 },
   statLabel: { ...typography.caption, fontSize: 12 },
   quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, justifyContent: "space-between" },
+  statePill: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 10, paddingVertical: 4, backgroundColor: colors.bgAlt,
+    borderRadius: 999, alignSelf: "flex-start", marginTop: 6,
+  },
+  statePillText: { color: colors.primaryDark, fontWeight: "800", fontSize: 11, letterSpacing: 0.5 },
+  examCardFeatured: { borderColor: colors.primary, backgroundColor: "#F1FBFD" },
+  examTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  yoursPill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
+  yoursPillText: { color: "#0A2A33", fontWeight: "800", fontSize: 10, letterSpacing: 0.5 },
   quickTile: {
     width: "22%",
     backgroundColor: "#fff",

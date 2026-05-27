@@ -47,7 +47,7 @@ export default function LoginScreen() {
       } else {
         await signInEmail(email.trim(), password);
       }
-      router.replace("/(tabs)");
+      router.replace("/");
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -60,7 +60,7 @@ export default function LoginScreen() {
     setLoading(kind);
     try {
       await fn();
-      router.replace("/(tabs)");
+      router.replace("/");
     } catch (e: any) {
       setError(e.message);
     } finally {

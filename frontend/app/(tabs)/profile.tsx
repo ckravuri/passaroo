@@ -66,6 +66,12 @@ export default function Profile() {
         <Row icon="calendar" label="Study Plan" onPress={() => router.push("/study-plan")} testID="row-study-plan" />
 
         <Section title="Account" />
+        <Row
+          icon="location"
+          label={user.state ? `State / Territory · ${user.state}` : "Set State / Territory"}
+          onPress={() => router.push({ pathname: "/select-state", params: { from: "settings" } })}
+          testID="row-change-state"
+        />
         <Row icon="card" label="Subscription" onPress={() => router.push("/paywall")} testID="row-subscription" />
         {user.is_admin && (
           <Row icon="shield-checkmark" label="Admin Dashboard" onPress={() => router.push("/admin")} testID="row-admin" />

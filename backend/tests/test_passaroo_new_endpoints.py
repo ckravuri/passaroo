@@ -45,7 +45,7 @@ def auth(user_token):
 # ---------- Bookmarks ----------
 def test_bookmark_toggle(session, auth):
     # Need a question id — pull from practice
-    r = session.get(f"{API}/exams/dkt/practice?count=1", headers=auth)
+    r = session.get(f"{API}/exams/dkt_nsw/practice?count=1", headers=auth)
     assert r.status_code == 200, r.text
     qid = r.json()["questions"][0]["question_id"]
 
@@ -67,7 +67,7 @@ def test_bookmark_toggle(session, auth):
 
 # ---------- Practice now returns correct + explanation ----------
 def test_practice_returns_correct_and_explanation(session, auth):
-    r = session.get(f"{API}/exams/dkt/practice?count=5", headers=auth)
+    r = session.get(f"{API}/exams/dkt_nsw/practice?count=5", headers=auth)
     assert r.status_code == 200, r.text
     d = r.json()
     assert "total_pool" in d
@@ -82,27 +82,27 @@ def test_practice_returns_correct_and_explanation(session, auth):
 
 def test_practice_with_topic_filter(session, auth):
     # Pick a topic from topics list
-    rt = session.get(f"{API}/exams/dkt/topics", headers=auth)
+    rt = session.get(f"{API}/exams/dkt_nsw/topics", headers=auth)
     assert rt.status_code == 200, rt.text
     topics = rt.json()["topics"]
     assert len(topics) > 0
     # Pick first topic without special chars to avoid url encoding edge cases
     safe = next((x for x in topics if all(c.isalnum() or c == " " for c in x["topic"])), topics[0])
     t = safe["topic"]
-    r = session.get(f"{API}/exams/dkt/practice", params={"topic": t, "count": 5}, headers=auth)
+    r = session.get(f"{API}/exams/dkt_nsw/practice", params={"topic": t, "count": 5}, headers=auth)
     assert r.status_code == 200, r.text
     for q in r.json()["questions"]:
         assert q["topic"] == t
 
 
 def test_practice_unknown_filter_404(session, auth):
-    r = session.get(f"{API}/exams/dkt/practice?topic=__nope__", headers=auth)
+    r = session.get(f"{API}/exams/dkt_nsw/practice?topic=__nope__", headers=auth)
     assert r.status_code == 404
 
 
 # ---------- Topics ----------
 def test_topics_endpoint(session, auth):
-    r = session.get(f"{API}/exams/dkt/topics", headers=auth)
+    r = session.get(f"{API}/exams/dkt_nsw/topics", headers=auth)
     assert r.status_code == 200, r.text
     topics = r.json()["topics"]
     assert isinstance(topics, list) and len(topics) > 0
@@ -122,13 +122,13 @@ def test_retry_wrong_empty(session, auth):
 # ---------- Submit an attempt with intentional wrong answers, then retry-wrong populated ----------
 def test_retry_wrong_populated_after_wrong_attempt(session, auth):
     # Fetch questions for exam
-    qr = session.get(f"{API}/exams/dkt/questions", headers=auth)
+    qr = session.get(f"{API}/exams/dkt_nsw/questions", headers=auth)
     assert qr.status_code == 200, qr.text
     qs = qr.json()["questions"]
     qids = [q["question_id"] for q in qs]
     # Always answer 0 — guaranteed some wrong
     body = {
-        "category_id": "dkt",
+        "category_id": "dkt_nsw",
         "question_ids": qids,
         "answers": [0] * len(qids),
         "time_taken_seconds": 60,

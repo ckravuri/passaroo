@@ -16,6 +16,7 @@ export default function Index() {
     );
   }
   if (!user) return <Redirect href="/onboarding" />;
+  if (!user.state) return <Redirect href="/select-state" />;
   return <Redirect href="/(tabs)" />;
 }
 

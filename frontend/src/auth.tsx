@@ -18,6 +18,8 @@ export type User = {
   picture?: string | null;
   plan: "guest" | "free" | "premium" | "pro";
   is_admin?: boolean;
+  state?: string | null;
+  primary_category_id?: string | null;
   streak_days: number;
   xp: number;
   level: number;

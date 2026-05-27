@@ -48,9 +48,10 @@ def test_categories(session):
     assert r.status_code == 200, r.text
     cats = r.json()["categories"]
     ids = {c["id"] for c in cats}
-    assert {"dkt", "citizenship", "rsa"}.issubset(ids), f"Got: {ids}"
+    assert {"dkt_nsw", "citizenship", "rsa"}.issubset(ids), f"Got: {ids}"
     for c in cats:
-        assert c["question_bank_size"] >= 25, f"{c['id']} bank size {c['question_bank_size']}"
+        # Each category should have at least 10 questions to support a quiz
+        assert c["question_bank_size"] >= 10, f"{c['id']} bank size {c['question_bank_size']}"
 
 
 # ---------------- Auth: Signup ----------------
@@ -107,11 +108,11 @@ def test_me_without_token(session):
 
 # ---------------- Exams: questions leak check ----------------
 def test_dkt_questions_no_leak(session, state):
-    r = session.get(f"{API}/exams/dkt/questions",
+    r = session.get(f"{API}/exams/dkt_nsw/questions",
                     headers={"Authorization": f"Bearer {state['user_token']}"})
     assert r.status_code == 200, r.text
     d = r.json()
-    assert d["category"]["id"] == "dkt"
+    assert d["category"]["id"] == "dkt_nsw"
     assert len(d["questions"]) > 0
     for q in d["questions"]:
         assert "correct" not in q, f"correct leaked: {q}"
@@ -124,7 +125,7 @@ def test_submit_attempt(session, state):
     qs = state["dkt_questions"]
     qids = [q["question_id"] for q in qs]
     body = {
-        "category_id": "dkt",
+        "category_id": "dkt_nsw",
         "question_ids": qids,
         "answers": [0] * len(qids),
         "time_taken_seconds": 120,
@@ -153,7 +154,7 @@ def test_user_stats(session, state):
                     headers={"Authorization": f"Bearer {state['user_token']}"})
     assert r.status_code == 200, r.text
     d = r.json()
-    assert "dkt" in d["by_category"]
+    assert "dkt_nsw" in d["by_category"]
     assert "weak_topics_top" in d
     assert "streak_days" in d["user"]
 
@@ -197,7 +198,7 @@ def test_ai_explain(session, state):
 # ---------------- AI tutor (premium) ----------------
 def test_ai_tutor_premium(session, state):
     body = {"session_id": f"tutor_{RUN_ID}", "message": "Give me one DKT study tip.",
-            "category_id": "dkt"}
+            "category_id": "dkt_nsw"}
     r = session.post(f"{API}/ai/tutor", json=body, timeout=45,
                      headers={"Authorization": f"Bearer {state['user_token']}"})
     if r.status_code == 502:
@@ -217,11 +218,11 @@ def test_weekly_exam_limit(session, state):
     # User already submitted 1 attempt (test_submit_attempt) — increments weekly counter to 1.
     # As free (2 exams/week): 1st GET ok, 2nd GET ok (used=1), 3rd GET should 429 (used=2)
     # Submit one more to reach used=2
-    qs_resp = session.get(f"{API}/exams/dkt/questions", headers=headers)
+    qs_resp = session.get(f"{API}/exams/dkt_nsw/questions", headers=headers)
     assert qs_resp.status_code == 200, qs_resp.text
     qs = qs_resp.json()["questions"]
     submit = session.post(f"{API}/exams/attempts",
-                          json={"category_id": "dkt",
+                          json={"category_id": "dkt_nsw",
                                 "question_ids": [q["question_id"] for q in qs],
                                 "answers": [0] * len(qs),
                                 "time_taken_seconds": 60},
@@ -229,7 +230,7 @@ def test_weekly_exam_limit(session, state):
     assert submit.status_code == 200, submit.text
 
     # Now used=2 -> next GET should 429
-    third = session.get(f"{API}/exams/dkt/questions", headers=headers)
+    third = session.get(f"{API}/exams/dkt_nsw/questions", headers=headers)
     assert third.status_code == 429, f"Expected 429, got {third.status_code}: {third.text}"
 
 
@@ -254,7 +255,7 @@ def test_admin_analytics(session, state):
 
 def test_admin_add_question(session, state):
     body = {
-        "category_id": "dkt",
+        "category_id": "dkt_nsw",
         "topic": "Test",
         "difficulty": "easy",
         "question": "TEST_Q What colour is a stop sign?",

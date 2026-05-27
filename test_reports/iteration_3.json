@@ -1,0 +1,54 @@
+{
+  "summary": "Phase-3 architecture (14 categories / 3 families / state-specific DKTs) verified end-to-end. Backend: 66/66 pytest tests pass (34 new Phase-3 tests + 32 regression tests updated for dkt -> dkt_nsw migration). All new endpoints (GET /exams/categories with families[], GET /exams/families, PATCH /user/profile, /exams/{id}/topics & /questions & /attempts for all 14 categories) function correctly. PATCH /user/profile: state normalisation (case-insensitive), invalid-state 400, auto-sets primary_category_id=dkt_<state> when prior primary was null or dkt_*, preserves non-dkt primary on state change. Legacy 'dkt' category has 0 questions after startup migration. Frontend: signup -> /select-state -> save -> home (state pill VIC, 'Yours' tag on dkt_vic card) -> tap pill -> /select-state?from=settings with back button -> Exams tab shows 3 family sections (driving expanded by default, all 8 DKTs visible; tapping citizenship/work_license expands them; all 14 exam rows tappable -> /exam/{id}) -> Profile tab shows 'State / Territory \u00b7 NSW' row which routes to /select-state?from=settings. All testIDs present and functional. No React Native red screens. No deprecated package issues found (project uses expo-audio/expo-video correctly).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "(tabs)/_layout auth guard",
+        "issue": "Hard-reloading directly to /profile (page.goto) sometimes shows 'Not authenticated' fallback briefly, suggesting the auth-guard renders before AsyncStorage rehydrates the token. Tab-bar navigation works fine; only deep-link / hard-reload affected. Consider showing a loading state until isLoading is false in the tabs layout.",
+        "testID": "row-change-state",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "home",
+        "issues": [
+          "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' \u2013 originates from RN Web layer (likely a third-party component). Not blocking but worth checking for own usages.",
+          "Console warning: 'Image: style.resizeMode is deprecated. Please use props.resizeMode.' \u2013 same as above."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_passaroo_phase3.py",
+    "/app/backend/tests/test_passaroo_backend.py",
+    "/app/backend/tests/test_passaroo_new_endpoints.py",
+    "/app/test_reports/pytest/pytest_all.xml"
+  ],
+  "action_items": [
+    "(LOW) Investigate the 'Not authenticated' flash when deep-linking to /profile after a hard reload; ensure the (tabs) auth guard waits for isLoading=false before showing the unauth fallback.",
+    "(NIT) Track down the source of 'props.pointerEvents is deprecated' and 'Image: style.resizeMode is deprecated' warnings; likely a small style fix in a shared component."
+  ],
+  "critical_code_review_comments": [
+    "Backend properly normalises state to uppercase and validates against AU_STATES.",
+    "Backend auto-derives primary_category_id only when prior primary is null or starts with 'dkt_', preserving user choice when they\u2019ve explicitly picked a work-license exam \u2014 nice.",
+    "Legacy 'dkt' migration runs on startup and clears all questions with category_id='dkt' to dkt_nsw."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_passaroo_phase3.py (new \u2013 Phase-3 test suite, 34 tests)",
+    "/app/backend/tests/test_passaroo_backend.py (replaced legacy 'dkt' refs with 'dkt_nsw'; relaxed question-bank-size assertion from \u226525 to \u226510 since new state DKTs ship with 10 Qs)",
+    "/app/backend/tests/test_passaroo_new_endpoints.py (replaced legacy 'dkt' refs with 'dkt_nsw')"
+  ],
+  "success_rate": {"backend": "100% (66/66)", "frontend": "100% on tab-bar navigation flows"},
+  "seed_data_creation": "Created fresh test users via /api/auth/email/signup with email phase3+<run>@passaroo.app and phase3-attempts+<run>@passaroo.app; the attempts user is upgraded to Pro via /api/user/plan so all 14 mock-exam attempt tests run unhindered.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase-3 (14 categories / 3 families) fully covered in /app/backend/tests/test_passaroo_phase3.py. All legacy tests have been migrated from 'dkt' to 'dkt_nsw'. Use signup-toggle on /login (testID auth-toggle, then signup-name + auth-email + auth-password + auth-submit) to create a user; new users always land on /select-state. Use the tab-bar to navigate between (tabs) screens \u2014 avoid full page.goto into protected screens, as the auth guard can briefly render 'Not authenticated' before AsyncStorage rehydrates.",
+  "rca_of_issue": "No critical issues found. Minor: profile tab guard renders unauth fallback during hard reload before AsyncStorage finishes hydration \u2013 root cause likely missing isLoading check in (tabs)/_layout.tsx auth guard."
+}
