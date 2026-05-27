@@ -1,5 +1,6 @@
 // API client for Passaroo backend.
 import { storage } from "@/src/utils/storage";
+import { getDeviceId } from "@/src/utils/deviceId";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL ?? "";
 const SESSION_KEY = "passaroo_session_token";
@@ -15,13 +16,19 @@ export async function clearToken(): Promise<void> {
 }
 
 export type ApiOptions = {
-  method?: "GET" | "POST" | "DELETE" | "PUT";
+  method?: "GET" | "POST" | "DELETE" | "PUT" | "PATCH";
   body?: any;
   auth?: boolean;
 };
 
 export async function api<T = any>(path: string, opts: ApiOptions = {}): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // Device id — always sent (used for anti-abuse, single-device session, guest gating)
+  try {
+    headers["X-Device-Id"] = await getDeviceId();
+  } catch {
+    // best-effort, do not block the call
+  }
   if (opts.auth !== false) {
     const t = await getToken();
     if (t) headers["Authorization"] = `Bearer ${t}`;
@@ -39,8 +46,16 @@ export async function api<T = any>(path: string, opts: ApiOptions = {}): Promise
     data = { detail: text };
   }
   if (!res.ok) {
-    const msg = data?.detail || `Request failed (${res.status})`;
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    // Detail can be a structured object (e.g. {code, message}) — surface message preferentially
+    let msg: string;
+    const d = data?.detail;
+    if (typeof d === "string") msg = d;
+    else if (d && typeof d === "object") msg = d.message || d.reason || JSON.stringify(d);
+    else msg = `Request failed (${res.status})`;
+    const err: any = new Error(msg);
+    err.status = res.status;
+    err.detail = d;
+    throw err;
   }
   return data as T;
 }

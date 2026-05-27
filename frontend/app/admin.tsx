@@ -49,7 +49,7 @@ type AdminUser = {
   banned?: boolean; xp?: number; streak_days?: number;
 };
 
-type Tab = "stats" | "questions" | "users";
+type Tab = "stats" | "questions" | "users" | "coupons";
 
 const PLANS = ["free", "premium", "pro"] as const;
 
@@ -80,7 +80,7 @@ export default function Admin() {
         </View>
 
         <View style={styles.tabBar}>
-          {(["stats", "questions", "users"] as Tab[]).map((t) => (
+          {(["stats", "questions", "users", "coupons"] as Tab[]).map((t) => (
             <TouchableOpacity
               key={t}
               onPress={() => setTab(t)}
@@ -97,6 +97,7 @@ export default function Admin() {
         {tab === "stats" && <StatsPanel />}
         {tab === "questions" && <QuestionsPanel />}
         {tab === "users" && <UsersPanel />}
+        {tab === "coupons" && <CouponsPanel />}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -615,6 +616,204 @@ function UsersPanel() {
 
       {!loading && users.length === 0 && (
         <Text style={styles.subtle}>No users match.</Text>
+      )}
+    </ScrollView>
+  );
+}
+
+// =========================================================================
+function CouponsPanel() {
+  const [coupons, setCoupons] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // form state
+  const [code, setCode] = useState("");
+  const [discountType, setDiscountType] = useState<"percent" | "fixed" | "trial_days" | "free_months">("percent");
+  const [discountValue, setDiscountValue] = useState("20");
+  const [maxUses, setMaxUses] = useState("");
+  const [description, setDescription] = useState("");
+  const [appliesPremium, setAppliesPremium] = useState(true);
+  const [appliesPro, setAppliesPro] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const r = await api<{ coupons: any[] }>("/admin/coupons");
+      setCoupons(r.coupons);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const create = async () => {
+    setErr(null);
+    if (!code.trim() || !discountValue) {
+      setErr("Code and value required");
+      return;
+    }
+    const plans: string[] = [];
+    if (appliesPremium) plans.push("premium");
+    if (appliesPro) plans.push("pro");
+    if (plans.length === 0) {
+      setErr("Pick at least one plan");
+      return;
+    }
+    setCreating(true);
+    try {
+      await api("/admin/coupons", {
+        method: "POST",
+        body: {
+          code: code.trim().toUpperCase(),
+          discount_type: discountType,
+          discount_value: parseInt(discountValue, 10) || 0,
+          applicable_plans: plans,
+          max_uses: maxUses ? parseInt(maxUses, 10) : null,
+          description: description.trim() || null,
+        },
+      });
+      setCode(""); setDiscountValue("20"); setMaxUses(""); setDescription("");
+      await load();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const toggleActive = async (c: any) => {
+    try {
+      await api(`/admin/coupons/${c.code}`, { method: "PATCH", body: { active: !c.active } });
+      await load();
+    } catch (e: any) { setErr(e.message); }
+  };
+
+  const remove = async (c: any) => {
+    Alert.alert("Delete coupon?", c.code, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete", style: "destructive",
+        onPress: async () => {
+          try {
+            await api(`/admin/coupons/${c.code}`, { method: "DELETE" });
+            await load();
+          } catch (e: any) { setErr(e.message); }
+        },
+      },
+    ]);
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.scroll}>
+      <View style={styles.card}>
+        <Text style={styles.section}>Create coupon</Text>
+        <Text style={styles.label}>Code</Text>
+        <TextInput
+          value={code}
+          onChangeText={(t) => setCode(t.toUpperCase())}
+          placeholder="LAUNCH20"
+          autoCapitalize="characters"
+          style={styles.input}
+          testID="coupon-code"
+        />
+        <Text style={styles.label}>Type</Text>
+        <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
+          {(["percent", "fixed", "trial_days", "free_months"] as const).map((t) => (
+            <TouchableOpacity
+              key={t}
+              onPress={() => setDiscountType(t)}
+              style={[styles.chip, discountType === t && styles.chipActive]}
+            >
+              <Text style={[styles.chipText, discountType === t && { color: "#0A2A33" }]}>{t}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <Text style={styles.label}>
+          Value ({discountType === "percent" ? "%" : discountType === "fixed" ? "cents" : discountType === "trial_days" ? "days" : "months"})
+        </Text>
+        <TextInput
+          value={discountValue}
+          onChangeText={setDiscountValue}
+          keyboardType="number-pad"
+          style={styles.input}
+          testID="coupon-value"
+        />
+        <Text style={styles.label}>Max uses (blank = unlimited)</Text>
+        <TextInput
+          value={maxUses}
+          onChangeText={setMaxUses}
+          keyboardType="number-pad"
+          style={styles.input}
+          testID="coupon-max-uses"
+        />
+        <Text style={styles.label}>Description (optional)</Text>
+        <TextInput value={description} onChangeText={setDescription} style={styles.input} />
+        <Text style={styles.label}>Applies to</Text>
+        <View style={{ flexDirection: "row", gap: 6 }}>
+          <TouchableOpacity
+            onPress={() => setAppliesPremium(!appliesPremium)}
+            style={[styles.chip, appliesPremium && styles.chipActive]}
+          >
+            <Text style={[styles.chipText, appliesPremium && { color: "#0A2A33" }]}>premium</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setAppliesPro(!appliesPro)}
+            style={[styles.chip, appliesPro && styles.chipActive]}
+          >
+            <Text style={[styles.chipText, appliesPro && { color: "#0A2A33" }]}>pro</Text>
+          </TouchableOpacity>
+        </View>
+        {err && <Text style={styles.errSmall}>{err}</Text>}
+        <PButton
+          title={creating ? "Creating..." : "Create coupon"}
+          onPress={create}
+          loading={creating}
+          testID="coupon-create"
+        />
+      </View>
+
+      <Text style={styles.section}>All coupons ({coupons.length})</Text>
+      {loading && <ActivityIndicator color={colors.primary} />}
+      {coupons.map((c) => (
+        <View key={c.code} style={styles.card}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={{ fontSize: 18, fontWeight: "800", letterSpacing: 1 }}>{c.code}</Text>
+            <View
+              style={{
+                paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999,
+                backgroundColor: c.active ? colors.correct + "22" : colors.wrong + "22",
+              }}
+            >
+              <Text style={{ color: c.active ? colors.correct : colors.wrong, fontWeight: "800", fontSize: 11 }}>
+                {c.active ? "ACTIVE" : "INACTIVE"}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.userMeta}>
+            {c.discount_type} · {c.discount_value} · plans: {(c.applicable_plans || []).join("/")}
+            {c.max_uses ? ` · ${c.used_count || 0}/${c.max_uses}` : c.used_count ? ` · ${c.used_count} uses` : ""}
+          </Text>
+          {c.description && <Text style={styles.userEmail}>{c.description}</Text>}
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            <TouchableOpacity onPress={() => toggleActive(c)} style={styles.chip}>
+              <Text style={styles.chipText}>{c.active ? "Disable" : "Enable"}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => remove(c)}
+              style={[styles.chip, { backgroundColor: colors.wrong + "22" }]}
+            >
+              <Text style={[styles.chipText, { color: colors.wrong }]}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ))}
+      {!loading && coupons.length === 0 && (
+        <Text style={styles.subtle}>No coupons yet. Create one above to get started.</Text>
       )}
     </ScrollView>
   );

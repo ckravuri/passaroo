@@ -78,8 +78,11 @@ export default function Profile() {
         )}
 
         <Section title="Legal & Privacy" />
+        <Row icon="document-text" label="Terms of Service" onPress={() => router.push("/terms")} testID="row-terms" />
+        <Row icon="cash" label="Refund Policy" onPress={() => router.push("/refund-policy")} testID="row-refund" />
         <Row icon="shield-half" label="Privacy Policy" onPress={() => router.push("/privacy")} testID="row-privacy" />
         <Row icon="lock-closed" label="Security Policy" onPress={() => router.push("/security")} testID="row-security" />
+        <Row icon="warning" label="Disclaimer" onPress={() => router.push("/disclaimer")} testID="row-disclaimer" />
         <Row icon="information-circle" label="About Passaroo" onPress={() => router.push("/about")} testID="row-about" />
 
         <PButton

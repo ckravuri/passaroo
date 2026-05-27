@@ -188,6 +188,16 @@ export default function LoginScreen() {
             </Text>
           </TouchableOpacity>
 
+          <Text style={styles.disclaimer}>
+            By continuing you agree to our{" "}
+            <Text style={[styles.disclaimer, { color: colors.primaryDark, textDecorationLine: "underline" }]}
+                  onPress={() => router.push("/terms")}>Terms</Text>,{" "}
+            <Text style={[styles.disclaimer, { color: colors.primaryDark, textDecorationLine: "underline" }]}
+                  onPress={() => router.push("/privacy")}>Privacy Policy</Text>{" "}
+            and{" "}
+            <Text style={[styles.disclaimer, { color: colors.primaryDark, textDecorationLine: "underline" }]}
+                  onPress={() => router.push("/refund-policy")}>Refund Policy</Text>.
+          </Text>
           <Text style={styles.disclaimer}>{DISCLAIMER}</Text>
         </ScrollView>
       </KeyboardAvoidingView>

@@ -21,6 +21,14 @@ from starlette.middleware.cors import CORSMiddleware
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from seed_data import CATEGORIES, FAMILIES
 from content import READING_MATERIAL, AU_STATES, ACHIEVEMENTS
+from subscription_config import (
+    TIERS,
+    SKUS,
+    PRICING,
+    TIER_MARKETING_FEATURES,
+    get_tier_limits,
+    public_plans_payload,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -61,6 +69,18 @@ class User(BaseModel):
     level: int = 1
     exams_this_week: int = 0
     week_start: Optional[str] = None
+    # ── Subscription tracking ─────────────────────────────────
+    billing_period: Optional[str] = None  # "monthly" | "yearly" | None for free
+    subscription_provider: Optional[str] = None  # "revenuecat" | "manual" | None
+    subscription_expires_at: Optional[datetime] = None
+    rc_app_user_id: Optional[str] = None  # RevenueCat appUserID
+    # ── Fair use & anti-abuse ────────────────────────────────
+    active_device_id: Optional[str] = None
+    fair_usage_violations: int = 0
+    suspended: bool = False
+    suspension_reason: Optional[str] = None
+    # ── Coupon redemption ────────────────────────────────────
+    redeemed_coupons: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -142,7 +162,10 @@ def to_aware(dt: Any) -> datetime:
     return dt
 
 
-async def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+async def get_current_user(
+    authorization: Optional[str] = Header(None),
+    x_device_id: Optional[str] = Header(None),
+) -> Dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Not authenticated")
     token = authorization.split(" ", 1)[1].strip()
@@ -154,23 +177,39 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[
     user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(401, "User not found")
+
+    # ── Account suspension check ───────────────────────────────────
+    if user.get("suspended"):
+        raise HTTPException(403, {
+            "code": "ACCOUNT_SUSPENDED",
+            "reason": user.get("suspension_reason") or "Account suspended for fair-use violations.",
+        })
+    if user.get("banned"):
+        raise HTTPException(403, "Account banned.")
+
+    # ── Single-device enforcement ──────────────────────────────────
+    # If the session has a bound device but a different one is calling, kick.
+    bound = session.get("device_id")
+    if bound and x_device_id and x_device_id != bound:
+        # Different device using this token — likely token sharing or hijack.
+        raise HTTPException(401, {
+            "code": "DEVICE_MISMATCH",
+            "message": "Session bound to another device. Please log in again.",
+        })
     return user
 
 
-async def require_admin(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
-    user = await get_current_user(authorization)
+async def require_admin(authorization: Optional[str] = Header(None),
+                        x_device_id: Optional[str] = Header(None)) -> Dict[str, Any]:
+    user = await get_current_user(authorization, x_device_id)
     if not user.get("is_admin"):
         raise HTTPException(403, "Admin only")
     return user
 
 
 def plan_limits(plan: str) -> Dict[str, Any]:
-    return {
-        "guest": {"exams_per_week": 1, "ai_explanations_per_day": 0, "ai_tutor": False, "ads": True},
-        "free": {"exams_per_week": 2, "ai_explanations_per_day": 5, "ai_tutor": False, "ads": True},
-        "premium": {"exams_per_week": 15, "ai_explanations_per_day": 100, "ai_tutor": True, "ads": False},
-        "pro": {"exams_per_week": 50, "ai_explanations_per_day": 500, "ai_tutor": True, "ads": False},
-    }.get(plan, {"exams_per_week": 2, "ai_explanations_per_day": 5, "ai_tutor": False, "ads": True})
+    """Backwards-compatible shape — frontend reads exams_per_week, ads, ai_tutor, etc."""
+    return get_tier_limits(plan)
 
 
 def week_key(dt: datetime) -> str:
@@ -213,18 +252,83 @@ async def update_streak_and_xp(user_id: str, xp_gain: int) -> None:
     )
 
 
-async def issue_session(user_id: str) -> str:
+async def issue_session(user_id: str, device_id: Optional[str] = None) -> str:
+    """Issue a new session. Enforces ONE active device per account by killing prior sessions."""
     token = f"sess_{uuid.uuid4().hex}{uuid.uuid4().hex}"
     await db.user_sessions.delete_many({"user_id": user_id})  # one active device session
     await db.user_sessions.insert_one(
         {
             "session_token": token,
             "user_id": user_id,
+            "device_id": device_id,
             "created_at": now(),
             "expires_at": now() + timedelta(days=7),
         }
     )
+    if device_id:
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"active_device_id": device_id, "last_login_at": now()}},
+        )
     return token
+
+
+# ── AI rate limiting (per-minute + per-day) ───────────────────────
+async def enforce_ai_rate_limit(user: Dict[str, Any], kind: str) -> None:
+    """Throttle AI usage based on plan. Raises 429 if exceeded."""
+    limits = plan_limits(user.get("plan", "free"))
+    today = now().date().isoformat()
+
+    # Per-minute throttle
+    per_min = limits.get("ai_per_minute", 2)
+    if per_min <= 0:
+        raise HTTPException(402, "AI features are not included in your plan.")
+    one_min_ago = now() - timedelta(seconds=60)
+    recent_count = await db.ai_usage.count_documents({
+        "user_id": user["user_id"], "at": {"$gte": one_min_ago}
+    })
+    if recent_count >= per_min:
+        raise HTTPException(429, {
+            "code": "AI_RATE_LIMIT",
+            "message": f"Too many AI requests. Please wait a minute (max {per_min}/min).",
+        })
+
+    # Daily cap (kind-specific)
+    if kind == "explain":
+        cap = limits.get("ai_explanations_per_day", 0)
+    elif kind == "tutor":
+        cap = limits.get("ai_tutor_messages_per_day", 0)
+    else:
+        cap = limits.get("ai_explanations_per_day", 0)
+    used = await db.ai_usage.count_documents({
+        "user_id": user["user_id"], "kind": kind, "date": today
+    })
+    if used >= cap:
+        raise HTTPException(429, {
+            "code": "AI_DAILY_LIMIT",
+            "message": f"Daily AI {kind} limit reached ({cap}). Upgrade your plan.",
+        })
+
+
+async def record_ai_usage(user_id: str, kind: str) -> None:
+    await db.ai_usage.insert_one({
+        "user_id": user_id, "kind": kind,
+        "date": now().date().isoformat(), "at": now(),
+    })
+
+
+async def flag_violation(user_id: str, reason: str, auto_suspend_threshold: int = 3) -> None:
+    """Track a fair-use violation; auto-suspend after threshold."""
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0, "fair_usage_violations": 1})
+    new_count = (u.get("fair_usage_violations", 0) if u else 0) + 1
+    update: Dict[str, Any] = {"fair_usage_violations": new_count}
+    if new_count >= auto_suspend_threshold:
+        update["suspended"] = True
+        update["suspension_reason"] = f"Auto-suspended after {new_count} violations: {reason}"
+    await db.users.update_one({"user_id": user_id}, {"$set": update})
+    await db.abuse_log.insert_one({
+        "user_id": user_id, "reason": reason, "at": now(),
+    })
 
 
 async def upsert_user_by_email(email: str, name: str, picture: Optional[str], provider: str) -> Dict[str, Any]:
@@ -251,7 +355,7 @@ async def root():
 
 
 @api.post("/auth/email/signup")
-async def email_signup(body: EmailSignupBody):
+async def email_signup(body: EmailSignupBody, x_device_id: Optional[str] = Header(None)):
     email = body.email.lower()
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
@@ -263,27 +367,33 @@ async def email_signup(body: EmailSignupBody):
         name=body.name,
         auth_provider="email",
         is_admin=is_admin,
+        active_device_id=x_device_id,
     ).model_dump()
     user_doc["password_hash"] = hash_password(body.password)
     await db.users.insert_one(user_doc)
-    token = await issue_session(user_doc["user_id"])
+    token = await issue_session(user_doc["user_id"], device_id=x_device_id)
     user_doc.pop("password_hash", None)
     user_doc.pop("_id", None)
     return {"session_token": token, "user": user_doc}
 
 
 @api.post("/auth/email/login")
-async def email_login(body: EmailLoginBody):
+async def email_login(body: EmailLoginBody, x_device_id: Optional[str] = Header(None)):
     user = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
     if not user or not user.get("password_hash") or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(401, "Invalid email or password")
-    token = await issue_session(user["user_id"])
+    if user.get("suspended"):
+        raise HTTPException(403, {
+            "code": "ACCOUNT_SUSPENDED",
+            "reason": user.get("suspension_reason") or "Account suspended.",
+        })
+    token = await issue_session(user["user_id"], device_id=x_device_id)
     user.pop("password_hash", None)
     return {"session_token": token, "user": user}
 
 
 @api.post("/auth/google/session")
-async def google_session(body: GoogleSessionBody):
+async def google_session(body: GoogleSessionBody, x_device_id: Optional[str] = Header(None)):
     # Verify session_id with Emergent
     async with httpx.AsyncClient(timeout=15) as cx:
         r = await cx.get(
@@ -297,7 +407,7 @@ async def google_session(body: GoogleSessionBody):
         email=data["email"], name=data.get("name", "User"),
         picture=data.get("picture"), provider="google",
     )
-    token = await issue_session(user["user_id"])
+    token = await issue_session(user["user_id"], device_id=x_device_id)
     user.pop("password_hash", None)
     user.pop("_id", None)
     return {"session_token": token, "user": user}
@@ -504,16 +614,10 @@ async def _llm_chat(session_id: str, system: str, user_msg: str) -> str:
 
 
 @api.post("/ai/explain")
-async def ai_explain(body: AIExplainBody, authorization: Optional[str] = Header(None)):
-    user = await get_current_user(authorization)
-    limits = plan_limits(user.get("plan", "free"))
-    # daily limit
-    today = now().date().isoformat()
-    used = await db.ai_usage.count_documents(
-        {"user_id": user["user_id"], "kind": "explain", "date": today}
-    )
-    if used >= limits["ai_explanations_per_day"]:
-        raise HTTPException(429, "Daily AI explanation limit reached. Upgrade your plan.")
+async def ai_explain(body: AIExplainBody, authorization: Optional[str] = Header(None),
+                     x_device_id: Optional[str] = Header(None)):
+    user = await get_current_user(authorization, x_device_id)
+    await enforce_ai_rate_limit(user, "explain")
 
     correct_text = body.options[body.correct_index] if 0 <= body.correct_index < len(body.options) else "(unknown)"
     user_text = (body.options[body.user_answer_index]
@@ -543,18 +647,18 @@ async def ai_explain(body: AIExplainBody, authorization: Optional[str] = Header(
         log.exception("AI explain failed")
         raise HTTPException(502, f"AI service error: {e}")
 
-    await db.ai_usage.insert_one(
-        {"user_id": user["user_id"], "kind": "explain", "date": today, "at": now()}
-    )
+    await record_ai_usage(user["user_id"], "explain")
     return {"explanation": reply}
 
 
 @api.post("/ai/tutor")
-async def ai_tutor(body: AITutorBody, authorization: Optional[str] = Header(None)):
-    user = await get_current_user(authorization)
+async def ai_tutor(body: AITutorBody, authorization: Optional[str] = Header(None),
+                   x_device_id: Optional[str] = Header(None)):
+    user = await get_current_user(authorization, x_device_id)
     limits = plan_limits(user.get("plan", "free"))
     if not limits["ai_tutor"]:
         raise HTTPException(402, "AI Tutor is a Premium/Pro feature. Upgrade to chat with the tutor.")
+    await enforce_ai_rate_limit(user, "tutor")
 
     # Build rich context: category + state + recent weak topics from last 5 attempts
     cat_hint = ""
@@ -605,6 +709,7 @@ async def ai_tutor(body: AITutorBody, authorization: Optional[str] = Header(None
         "user_id": user["user_id"], "session_id": body.session_id,
         "user_message": body.message, "ai_reply": reply, "at": now(),
     })
+    await record_ai_usage(user["user_id"], "tutor")
     return {"reply": reply}
 
 
@@ -1019,6 +1124,13 @@ async def startup():
     await db.exam_attempts.create_index("user_id")
     await db.exam_attempts.create_index("created_at")
     await db.ai_usage.create_index([("user_id", 1), ("date", 1)])
+    await db.ai_usage.create_index([("user_id", 1), ("at", -1)])
+    # New collections (Phase 5)
+    await db.coupons.create_index("code", unique=True)
+    await db.coupon_redemptions.create_index([("user_id", 1), ("code", 1)])
+    await db.guest_attempts.create_index("device_id", unique=True)
+    await db.iap_events.create_index("at")
+    await db.abuse_log.create_index([("user_id", 1), ("at", -1)])
 
     # Migration: legacy "dkt" category → "dkt_nsw"
     legacy_count = await db.questions.count_documents({"category_id": "dkt"})
@@ -1129,7 +1241,7 @@ class AppleTokenBody(BaseModel):
 
 
 @api.post("/auth/apple/token")
-async def apple_signin(body: AppleTokenBody):
+async def apple_signin(body: AppleTokenBody, x_device_id: Optional[str] = Header(None)):
     """Verify Apple identity token. Apple JWTs are signed by Apple — for MVP we
     decode (un-verified) to extract email and sub. In production add JWKS verification."""
     try:
@@ -1145,7 +1257,7 @@ async def apple_signin(body: AppleTokenBody):
         email = f"apple_{sub}@private.passaroo.app"
     name = body.full_name or email.split("@")[0]
     user = await upsert_user_by_email(email=email, name=name, picture=None, provider="apple")
-    token = await issue_session(user["user_id"])
+    token = await issue_session(user["user_id"], device_id=x_device_id)
     user.pop("password_hash", None)
     user.pop("_id", None)
     return {"session_token": token, "user": user}
@@ -1157,7 +1269,7 @@ class MicrosoftTokenBody(BaseModel):
 
 
 @api.post("/auth/microsoft/token")
-async def microsoft_signin(body: MicrosoftTokenBody):
+async def microsoft_signin(body: MicrosoftTokenBody, x_device_id: Optional[str] = Header(None)):
     """Verify Microsoft access_token by calling Graph /me."""
     async with httpx.AsyncClient(timeout=15) as cx:
         r = await cx.get(
@@ -1172,7 +1284,7 @@ async def microsoft_signin(body: MicrosoftTokenBody):
         raise HTTPException(401, "Microsoft account missing email")
     name = data.get("displayName") or email.split("@")[0]
     user = await upsert_user_by_email(email=email, name=name, picture=None, provider="microsoft")
-    token = await issue_session(user["user_id"])
+    token = await issue_session(user["user_id"], device_id=x_device_id)
     user.pop("password_hash", None)
     user.pop("_id", None)
     return {"session_token": token, "user": user}
@@ -1532,6 +1644,426 @@ async def send_push(recipients: List[str], data: Dict[str, Any]) -> None:
 
 
 # ---------- End Phase 2 ----------
+
+# ============================================================
+# Phase 5: Subscription plans, coupons, fair-use, guest exams,
+# RevenueCat webhook (stub) — added 2026.
+# ============================================================
+
+# ---------- Public subscription config ----------
+@api.get("/subscription/plans")
+async def subscription_plans():
+    """Frontend paywall consumes this to render plans + pricing dynamically."""
+    payload = public_plans_payload()
+    payload["marketing_features"] = TIER_MARKETING_FEATURES
+    return payload
+
+
+@api.get("/subscription/me")
+async def my_subscription(authorization: Optional[str] = Header(None),
+                          x_device_id: Optional[str] = Header(None)):
+    user = await get_current_user(authorization, x_device_id)
+    limits = plan_limits(user.get("plan", "free"))
+    cur_week = week_key(now())
+    exams_used = user.get("exams_this_week", 0) if user.get("week_start") == cur_week else 0
+    today = now().date().isoformat()
+    explain_used = await db.ai_usage.count_documents({
+        "user_id": user["user_id"], "kind": "explain", "date": today
+    })
+    tutor_used = await db.ai_usage.count_documents({
+        "user_id": user["user_id"], "kind": "tutor", "date": today
+    })
+    return {
+        "plan": user.get("plan", "free"),
+        "billing_period": user.get("billing_period"),
+        "subscription_provider": user.get("subscription_provider"),
+        "subscription_expires_at": user.get("subscription_expires_at"),
+        "limits": limits,
+        "usage": {
+            "exams_this_week": exams_used,
+            "exams_per_week_limit": limits["exams_per_week"],
+            "ai_explanations_today": explain_used,
+            "ai_explanations_limit": limits["ai_explanations_per_day"],
+            "ai_tutor_today": tutor_used,
+            "ai_tutor_limit": limits["ai_tutor_messages_per_day"],
+        },
+        "suspended": user.get("suspended", False),
+        "suspension_reason": user.get("suspension_reason"),
+    }
+
+
+# ---------- Coupons ----------
+class CouponCreate(BaseModel):
+    code: str
+    discount_type: str = "percent"  # "percent" | "fixed" | "trial_days" | "free_months"
+    discount_value: int  # percent (1-100), fixed cents, days, or months
+    applicable_plans: List[str] = Field(default_factory=lambda: ["premium", "pro"])
+    max_uses: Optional[int] = None  # null = unlimited
+    expires_at: Optional[datetime] = None
+    active: bool = True
+    description: Optional[str] = None
+
+
+class CouponValidate(BaseModel):
+    code: str
+    plan: Optional[str] = None  # plan they want to apply to (premium/pro)
+
+
+def _coupon_public(c: Dict[str, Any]) -> Dict[str, Any]:
+    out = {k: v for k, v in c.items() if k != "_id"}
+    out["uses_left"] = (c.get("max_uses") or 0) - c.get("used_count", 0) if c.get("max_uses") else None
+    return out
+
+
+@api.post("/coupons/validate")
+async def validate_coupon(body: CouponValidate, authorization: Optional[str] = Header(None),
+                          x_device_id: Optional[str] = Header(None)):
+    user = await get_current_user(authorization, x_device_id)
+    code = body.code.strip().upper()
+    coupon = await db.coupons.find_one({"code": code}, {"_id": 0})
+    if not coupon or not coupon.get("active"):
+        raise HTTPException(404, "Invalid or expired coupon code")
+    if coupon.get("expires_at") and to_aware(coupon["expires_at"]) < now():
+        raise HTTPException(400, "This coupon has expired")
+    if coupon.get("max_uses") is not None and coupon.get("used_count", 0) >= coupon["max_uses"]:
+        raise HTTPException(400, "This coupon has reached its usage limit")
+    if code in (user.get("redeemed_coupons") or []):
+        raise HTTPException(400, "You have already redeemed this coupon")
+    if body.plan and coupon.get("applicable_plans") and body.plan not in coupon["applicable_plans"]:
+        raise HTTPException(400, f"This coupon is not valid for the {body.plan} plan")
+    return {"valid": True, "coupon": _coupon_public(coupon)}
+
+
+class CouponRedeem(BaseModel):
+    code: str
+    plan: str  # "premium" | "pro"
+    billing_period: str = "monthly"  # "monthly" | "yearly"
+
+
+@api.post("/coupons/redeem")
+async def redeem_coupon(body: CouponRedeem, authorization: Optional[str] = Header(None),
+                        x_device_id: Optional[str] = Header(None)):
+    """Redeem coupon → grant entitlement (trial_days/free_months) or discounted upgrade.
+    NOTE: For RevenueCat-backed paid subscriptions, the discount is applied at checkout
+    using RC promotional offers / Apple offer codes / Google promo codes — this endpoint
+    handles MANUAL coupon-based entitlements granted by the server (gift codes, betas, etc.)."""
+    user = await get_current_user(authorization, x_device_id)
+    code = body.code.strip().upper()
+    coupon = await db.coupons.find_one({"code": code}, {"_id": 0})
+    if not coupon or not coupon.get("active"):
+        raise HTTPException(404, "Invalid coupon")
+    if coupon.get("expires_at") and to_aware(coupon["expires_at"]) < now():
+        raise HTTPException(400, "Coupon expired")
+    if coupon.get("max_uses") is not None and coupon.get("used_count", 0) >= coupon["max_uses"]:
+        raise HTTPException(400, "Coupon usage limit reached")
+    if code in (user.get("redeemed_coupons") or []):
+        raise HTTPException(400, "Already redeemed")
+    if body.plan not in {"premium", "pro"}:
+        raise HTTPException(400, "Invalid plan")
+    if coupon.get("applicable_plans") and body.plan not in coupon["applicable_plans"]:
+        raise HTTPException(400, f"Coupon not valid for {body.plan}")
+
+    granted_until: Optional[datetime] = None
+    discount_meta: Dict[str, Any] = {"type": coupon["discount_type"], "value": coupon["discount_value"]}
+
+    if coupon["discount_type"] == "trial_days":
+        granted_until = now() + timedelta(days=int(coupon["discount_value"]))
+    elif coupon["discount_type"] == "free_months":
+        granted_until = now() + timedelta(days=int(coupon["discount_value"]) * 30)
+    elif coupon["discount_type"] in ("percent", "fixed"):
+        # Just return discount metadata — frontend forwards to RC checkout
+        return {
+            "ok": True,
+            "type": "discount_only",
+            "discount": discount_meta,
+            "message": "Apply this discount at checkout.",
+        }
+
+    if granted_until:
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {
+                "$set": {
+                    "plan": body.plan,
+                    "billing_period": body.billing_period,
+                    "subscription_provider": "coupon",
+                    "subscription_expires_at": granted_until,
+                },
+                "$addToSet": {"redeemed_coupons": code},
+            },
+        )
+    else:
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$addToSet": {"redeemed_coupons": code}},
+        )
+
+    await db.coupons.update_one({"code": code}, {"$inc": {"used_count": 1}})
+    await db.coupon_redemptions.insert_one({
+        "user_id": user["user_id"], "code": code, "plan": body.plan,
+        "billing_period": body.billing_period,
+        "discount_meta": discount_meta,
+        "redeemed_at": now(),
+        "granted_until": granted_until,
+    })
+    return {
+        "ok": True,
+        "type": "entitlement_granted",
+        "plan": body.plan,
+        "granted_until": granted_until.isoformat() if granted_until else None,
+    }
+
+
+# ---------- Admin Coupons ----------
+@api.get("/admin/coupons")
+async def admin_list_coupons(authorization: Optional[str] = Header(None),
+                             x_device_id: Optional[str] = Header(None)):
+    await require_admin(authorization, x_device_id)
+    items = await db.coupons.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"coupons": items, "count": len(items)}
+
+
+@api.post("/admin/coupons")
+async def admin_create_coupon(body: CouponCreate, authorization: Optional[str] = Header(None),
+                              x_device_id: Optional[str] = Header(None)):
+    await require_admin(authorization, x_device_id)
+    code = body.code.strip().upper()
+    if not code or len(code) < 3:
+        raise HTTPException(400, "Coupon code too short (min 3 chars)")
+    if body.discount_type not in {"percent", "fixed", "trial_days", "free_months"}:
+        raise HTTPException(400, "Invalid discount_type")
+    if body.discount_type == "percent" and not (1 <= body.discount_value <= 100):
+        raise HTTPException(400, "Percent must be 1-100")
+    existing = await db.coupons.find_one({"code": code})
+    if existing:
+        raise HTTPException(409, "Coupon code already exists")
+    doc = body.model_dump()
+    doc["code"] = code
+    doc["used_count"] = 0
+    doc["created_at"] = now()
+    await db.coupons.insert_one(doc)
+    doc.pop("_id", None)
+    return {"coupon": doc}
+
+
+class CouponUpdate(BaseModel):
+    active: Optional[bool] = None
+    max_uses: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    description: Optional[str] = None
+    applicable_plans: Optional[List[str]] = None
+
+
+@api.patch("/admin/coupons/{code}")
+async def admin_update_coupon(code: str, body: CouponUpdate,
+                              authorization: Optional[str] = Header(None),
+                              x_device_id: Optional[str] = Header(None)):
+    await require_admin(authorization, x_device_id)
+    update = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if not update:
+        raise HTTPException(400, "No fields to update")
+    res = await db.coupons.update_one({"code": code.upper()}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Coupon not found")
+    refreshed = await db.coupons.find_one({"code": code.upper()}, {"_id": 0})
+    return {"coupon": refreshed}
+
+
+@api.delete("/admin/coupons/{code}")
+async def admin_delete_coupon(code: str, authorization: Optional[str] = Header(None),
+                              x_device_id: Optional[str] = Header(None)):
+    await require_admin(authorization, x_device_id)
+    res = await db.coupons.delete_one({"code": code.upper()})
+    return {"deleted": res.deleted_count}
+
+
+# ---------- Guest mock-exam (1 trial without signup) ----------
+class GuestExamSubmitBody(BaseModel):
+    category_id: str
+    question_ids: List[str]
+    answers: List[int]
+    time_taken_seconds: int
+
+
+@api.get("/exams/guest/start/{category_id}")
+async def guest_start_exam(category_id: str, x_device_id: Optional[str] = Header(None)):
+    """Guest user trial: 1 mock exam per device. No auth required."""
+    if not x_device_id:
+        raise HTTPException(400, {"code": "DEVICE_ID_REQUIRED", "message": "Missing device id"})
+    # Check guest usage
+    g = await db.guest_attempts.find_one({"device_id": x_device_id}, {"_id": 0})
+    if g and g.get("count", 0) >= 1:
+        raise HTTPException(429, {
+            "code": "GUEST_TRIAL_USED",
+            "message": "You've used your free trial exam. Sign up to keep practising.",
+        })
+    cat = next((c for c in CATEGORIES if c["id"] == category_id), None)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    pool = await db.questions.find(
+        {"category_id": category_id}, {"_id": 0, "correct": 0, "explanation": 0}
+    ).to_list(1000)
+    if len(pool) < 5:
+        raise HTTPException(503, "Question bank not seeded yet")
+    sample = random.sample(pool, min(cat["total_questions_in_exam"], len(pool)))
+    return {
+        "category": {
+            "id": cat["id"], "name": cat["name"], "short_name": cat["short_name"],
+            "time_limit_minutes": cat["time_limit_minutes"],
+            "pass_score_percent": cat["pass_score_percent"],
+            "total_questions_in_exam": len(sample),
+        },
+        "questions": sample,
+        "is_guest_trial": True,
+    }
+
+
+@api.post("/exams/guest/submit")
+async def guest_submit_exam(body: GuestExamSubmitBody,
+                            x_device_id: Optional[str] = Header(None)):
+    if not x_device_id:
+        raise HTTPException(400, "Missing device id")
+    # Guard against repeat after the first attempt
+    g = await db.guest_attempts.find_one({"device_id": x_device_id}, {"_id": 0})
+    if g and g.get("count", 0) >= 1:
+        raise HTTPException(429, "Guest trial already used — please sign up.")
+    cat = next((c for c in CATEGORIES if c["id"] == body.category_id), None)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    questions = await db.questions.find(
+        {"question_id": {"$in": body.question_ids}}, {"_id": 0}
+    ).to_list(length=500)
+    qmap = {q["question_id"]: q for q in questions}
+    correct = 0
+    review: List[Dict[str, Any]] = []
+    for qid, ans in zip(body.question_ids, body.answers):
+        q = qmap.get(qid)
+        if not q:
+            continue
+        is_correct = ans == q["correct"]
+        if is_correct:
+            correct += 1
+        review.append({
+            "question_id": qid, "question": q["question"], "options": q["options"],
+            "correct": q["correct"], "user_answer": ans,
+            "is_correct": is_correct, "topic": q.get("topic"),
+            "explanation": q.get("explanation"),
+        })
+    total = len(body.question_ids)
+    score_pct = round((correct / total) * 100) if total else 0
+    passed = score_pct >= cat["pass_score_percent"]
+    # Mark device as used
+    await db.guest_attempts.update_one(
+        {"device_id": x_device_id},
+        {
+            "$inc": {"count": 1},
+            "$set": {"last_at": now(), "category_id": body.category_id, "score_percent": score_pct},
+        },
+        upsert=True,
+    )
+    return {
+        "score_percent": score_pct, "correct_count": correct, "total_questions": total,
+        "passed": passed, "review": review,
+        "must_signup": True,
+        "message": "Sign up to save your progress, unlock more exams, and try AI explanations!",
+    }
+
+
+# ---------- RevenueCat webhook (placeholder until keys are wired) ----------
+RC_WEBHOOK_SECRET = os.environ.get("RC_WEBHOOK_SECRET", "")
+
+
+@api.post("/iap/revenuecat-webhook")
+async def revenuecat_webhook(request: Request,
+                             authorization: Optional[str] = Header(None)):
+    """RevenueCat sends events here. Configure 'Authorization Header' to
+    `Bearer <RC_WEBHOOK_SECRET>` in the RevenueCat dashboard.
+
+    Events handled:
+      INITIAL_PURCHASE, RENEWAL, NON_RENEWING_PURCHASE → grant entitlement
+      CANCELLATION, EXPIRATION, BILLING_ISSUE → keep until expires_date, then downgrade
+      PRODUCT_CHANGE → update plan
+      TRANSFER → reassign rc_app_user_id
+    """
+    if RC_WEBHOOK_SECRET:
+        if not authorization or authorization != f"Bearer {RC_WEBHOOK_SECRET}":
+            raise HTTPException(401, "Invalid RC webhook auth")
+    payload = await request.json()
+    event = payload.get("event") or {}
+    ev_type = event.get("type")
+    app_user_id = event.get("app_user_id")
+    product_id = event.get("product_id", "")
+    expires_ms = event.get("expiration_at_ms")
+    expires_at: Optional[datetime] = None
+    if expires_ms:
+        expires_at = datetime.fromtimestamp(int(expires_ms) / 1000, tz=timezone.utc)
+
+    # Map SKU → plan + billing_period
+    plan = "free"
+    period: Optional[str] = None
+    if "premium" in product_id:
+        plan = "premium"
+    elif "pro" in product_id:
+        plan = "pro"
+    if "yearly" in product_id:
+        period = "yearly"
+    elif "monthly" in product_id:
+        period = "monthly"
+
+    await db.iap_events.insert_one({
+        "event_type": ev_type, "app_user_id": app_user_id,
+        "product_id": product_id, "raw": payload, "at": now(),
+    })
+
+    if not app_user_id:
+        return {"ok": True, "ignored": "no_app_user_id"}
+
+    # Find user by rc_app_user_id (set when client logs into RC) or fall back to user_id match
+    user = await db.users.find_one(
+        {"$or": [{"rc_app_user_id": app_user_id}, {"user_id": app_user_id}]},
+        {"_id": 0},
+    )
+    if not user:
+        return {"ok": True, "ignored": "user_not_found"}
+
+    set_doc: Dict[str, Any] = {}
+    if ev_type in {"INITIAL_PURCHASE", "RENEWAL", "NON_RENEWING_PURCHASE", "PRODUCT_CHANGE"}:
+        set_doc["plan"] = plan
+        if period:
+            set_doc["billing_period"] = period
+        set_doc["subscription_provider"] = "revenuecat"
+        if expires_at:
+            set_doc["subscription_expires_at"] = expires_at
+    elif ev_type in {"CANCELLATION", "EXPIRATION", "BILLING_ISSUE"}:
+        # Keep entitlement until expiry, but record the cancellation
+        if expires_at and expires_at < now():
+            set_doc["plan"] = "free"
+            set_doc["billing_period"] = None
+        set_doc["subscription_cancelled_at"] = now()
+
+    if set_doc:
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": set_doc})
+    return {"ok": True, "applied": list(set_doc.keys())}
+
+
+# Frontend calls this after RevenueCat.logIn() so we can map app_user_id → user_id.
+class RCLinkBody(BaseModel):
+    rc_app_user_id: str
+
+
+@api.post("/iap/link-rc-user")
+async def link_revenuecat_user(body: RCLinkBody, authorization: Optional[str] = Header(None),
+                               x_device_id: Optional[str] = Header(None)):
+    user = await get_current_user(authorization, x_device_id)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"rc_app_user_id": body.rc_app_user_id}},
+    )
+    return {"ok": True}
+
+
+# ---------- End Phase 5 ----------
+
 
 app.include_router(api)
 app.add_middleware(
