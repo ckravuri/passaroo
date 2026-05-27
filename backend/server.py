@@ -804,10 +804,18 @@ async def admin_add_question(body: AdminQuestionBody, authorization: Optional[st
     doc["created_at"] = now()
     cat = next((c for c in CATEGORIES if c["id"] == body.category_id), None)
     if cat:
-        doc.setdefault("family", cat.get("family"))
-        doc.setdefault("state", cat.get("state"))
-    doc.setdefault("tags", [])
-    doc.setdefault("learning_objectives", [])
+        # Always inherit family + state from category if not explicitly provided.
+        # (setdefault is no-op because model_dump emits None for unset Optionals.)
+        if doc.get("family") is None:
+            doc["family"] = cat.get("family")
+        if doc.get("state") is None:
+            doc["state"] = cat.get("state")
+    if doc.get("difficulty") is None:
+        doc["difficulty"] = "medium"
+    if doc.get("tags") is None:
+        doc["tags"] = []
+    if doc.get("learning_objectives") is None:
+        doc["learning_objectives"] = []
     await db.questions.insert_one(doc)
     doc.pop("_id", None)
     return {"question": doc}
