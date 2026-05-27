@@ -164,7 +164,7 @@ def to_aware(dt: Any) -> datetime:
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
-    x_device_id: Optional[str] = Header(None),
+    x_device_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Not authenticated")
@@ -200,7 +200,7 @@ async def get_current_user(
 
 
 async def require_admin(authorization: Optional[str] = Header(None),
-                        x_device_id: Optional[str] = Header(None)) -> Dict[str, Any]:
+                        x_device_id: Optional[str] = None) -> Dict[str, Any]:
     user = await get_current_user(authorization, x_device_id)
     if not user.get("is_admin"):
         raise HTTPException(403, "Admin only")
@@ -1030,12 +1030,15 @@ class AdminUserUpdate(BaseModel):
     is_admin: Optional[bool] = None
     state: Optional[str] = None
     banned: Optional[bool] = None
+    suspended: Optional[bool] = None
+    suspension_reason: Optional[str] = None
 
 
 @api.patch("/admin/users/{user_id}")
 async def admin_update_user(user_id: str, body: AdminUserUpdate,
-                            authorization: Optional[str] = Header(None)):
-    await require_admin(authorization)
+                            authorization: Optional[str] = Header(None),
+                            x_device_id: Optional[str] = None):
+    await require_admin(authorization, x_device_id)
     update = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if "plan" in update and update["plan"] not in {"guest", "free", "premium", "pro"}:
         raise HTTPException(400, "Invalid plan")
@@ -1044,7 +1047,8 @@ async def admin_update_user(user_id: str, body: AdminUserUpdate,
     res = await db.users.update_one({"user_id": user_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(404, "User not found")
-    if update.get("banned"):
+    # When banning OR suspending, kill all active sessions so they can't keep using the app
+    if update.get("banned") or update.get("suspended"):
         await db.user_sessions.delete_many({"user_id": user_id})
     refreshed = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
     return {"user": refreshed}
