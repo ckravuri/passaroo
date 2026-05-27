@@ -1,0 +1,142 @@
+{
+  "app_name": "Passaroo",
+  "theme": "light",
+  "archetype": "6 (Vibrant Play) + Premium Tech",
+  "design_philosophy": "Duolingo-inspired simplicity mixed with startup quality. The app must feel tactile, highly encouraging, and strictly native (Expo). Gamification is at the core, utilizing 'chunky' 3D-like buttons and cards with thick bottom borders, ample whitespace, and neon accents.",
+  "colors": {
+    "primary_neon_blue": "#00D1FF",
+    "primary_neon_blue_dark": "#009BCC",
+    "primary_neon_green": "#00FF9D",
+    "primary_neon_green_dark": "#00CC7E",
+    "background_main": "#FFFFFF",
+    "background_alt": "#F4F5F9",
+    "surface": "#FFFFFF",
+    "text_primary": "#1A1A24",
+    "text_secondary": "#8A8A93",
+    "text_tertiary": "#C1C1C8",
+    "accent_streak_fire": "#FF8F00",
+    "accent_error_wrong": "#FF4B4B",
+    "accent_success_correct": "#58CC02",
+    "border_light": "#E5E5EA",
+    "paywall_premium_purple": "#7B61FF"
+  },
+  "typography": {
+    "font_family_recommendation": "Nunito (via expo-google-fonts) or System sans-serif with tight tracking",
+    "h1": {
+      "fontSize": 32,
+      "fontWeight": "800",
+      "letterSpacing": 0.5,
+      "lineHeight": 40,
+      "color": "#1A1A24"
+    },
+    "h2": {
+      "fontSize": 24,
+      "fontWeight": "700",
+      "letterSpacing": 0.5,
+      "lineHeight": 32,
+      "color": "#1A1A24"
+    },
+    "h3": {
+      "fontSize": 20,
+      "fontWeight": "700",
+      "letterSpacing": 0.5,
+      "lineHeight": 28,
+      "color": "#1A1A24"
+    },
+    "body_large": {
+      "fontSize": 18,
+      "fontWeight": "600",
+      "lineHeight": 26,
+      "color": "#1A1A24"
+    },
+    "body": {
+      "fontSize": 16,
+      "fontWeight": "400",
+      "lineHeight": 24,
+      "color": "#1A1A24"
+    },
+    "caption": {
+      "fontSize": 14,
+      "fontWeight": "500",
+      "lineHeight": 20,
+      "color": "#8A8A93"
+    },
+    "button_text": {
+      "fontSize": 16,
+      "fontWeight": "800",
+      "letterSpacing": 1.0,
+      "textTransform": "uppercase"
+    }
+  },
+  "spacing": {
+    "xs": 4,
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "xl": 32,
+    "xxl": 48
+  },
+  "components": {
+    "buttons": {
+      "primary": "React Native StyleSheet: { backgroundColor: '#00D1FF', borderRadius: 16, borderBottomWidth: 4, borderBottomColor: '#009BCC', paddingVertical: 16, alignItems: 'center', justifyContent: 'center' }",
+      "secondary": "React Native StyleSheet: { backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 2, borderColor: '#E5E5EA', borderBottomWidth: 4, paddingVertical: 16, alignItems: 'center', justifyContent: 'center' }",
+      "interaction": "Use activeOpacity={0.8} on TouchableOpacity. To simulate depth press, visually translate Y +2 and reduce borderBottomWidth to 2 on press (optional if using Animated)."
+    },
+    "cards": {
+      "default": "React Native StyleSheet: { backgroundColor: '#FFFFFF', borderRadius: 20, borderWidth: 2, borderColor: '#E5E5EA', borderBottomWidth: 4, padding: 20 }",
+      "premium": "React Native StyleSheet: { backgroundColor: '#FFFFFF', borderRadius: 20, borderWidth: 2, borderColor: '#7B61FF', shadowColor: '#7B61FF', shadowOpacity: 0.2, shadowRadius: 12, elevation: 5, padding: 20 }"
+    },
+    "inputs": {
+      "text_input": "React Native StyleSheet: { backgroundColor: '#F4F5F9', borderRadius: 16, borderWidth: 2, borderColor: '#E5E5EA', padding: 16, fontSize: 16, color: '#1A1A24', fontWeight: '600' }",
+      "focused_state": "borderColor: '#00D1FF'"
+    },
+    "progress_bars": {
+      "track": "React Native StyleSheet: { backgroundColor: '#E5E5EA', borderRadius: 10, height: 16, overflow: 'hidden' }",
+      "fill": "React Native StyleSheet: { backgroundColor: '#00FF9D', borderRadius: 10, height: '100%' }"
+    },
+    "bottom_tabs": {
+      "container": "React Native StyleSheet: { backgroundColor: '#FFFFFF', borderTopWidth: 2, borderTopColor: '#E5E5EA', paddingBottom: 24, paddingTop: 12 }",
+      "active_tint": "#00D1FF",
+      "inactive_tint": "#C1C1C8"
+    }
+  },
+  "layout_and_navigation": {
+    "screen_container": "React Native StyleSheet: { flex: 1, backgroundColor: '#FFFFFF' }",
+    "safe_area": "MANDATORY: Wrap screens in SafeAreaView to prevent notch overlaps.",
+    "keyboard_handling": "MANDATORY: Use KeyboardAvoidingView (behavior='padding' on iOS) for screens with text inputs.",
+    "exam_header": "Layout: Left (Close 'X' icon), Center (Progress Bar, flex: 1), Right (Lives/Heart icon or Timer)."
+  },
+  "media_and_icons": {
+    "icon_library": "@expo/vector-icons (Feather for clean UI, Ionicons for standard native feel)",
+    "image_style": "React Native StyleSheet: { borderRadius: 24, resizeMode: 'contain' }",
+    "image_urls": {
+      "mascot_kangaroo": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/5c23184e-8a9e-4e85-aa5f-50bd78e7c8d6/images/40fda80bcaeed8ae4574a3912f56128d8ba07f787d148cc9cee0bb7285a9cf84.png",
+        "description": "Friendly modern kangaroo mascot holding a tablet. Use in Onboarding, Empty States, and as the avatar for the AI Tutor Chat."
+      },
+      "australian_study_background": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/5c23184e-8a9e-4e85-aa5f-50bd78e7c8d6/images/79ca3b44dfbdc78c0f58b71a6191e128ffcdcb331cfb6c1c7382baf473e709bc.png",
+        "description": "Minimalist Australian study motif background. Use for Home Dashboard headers or Subscription Paywall background."
+      },
+      "achievement_badge": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/5c23184e-8a9e-4e85-aa5f-50bd78e7c8d6/images/963397790a1f88e2f203b651537c5aaa493537a7e8ede54fa7004b720a249850.png",
+        "description": "3D glowing achievement badge. Use in Analytics screen, Exam Results screen, or when maintaining a long streak."
+      }
+    }
+  },
+  "testing_attributes": {
+    "rule": "All interactive and key informational elements MUST include a testing attribute to facilitate robust automated testing.",
+    "react_native_implementation": "In React Native, use the `testID` prop instead of `data-testid`. (e.g., `<TouchableOpacity testID=\"login-button\">`)"
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL DOMAIN: This is exclusively an Expo React Native mobile app.",
+    "CRITICAL CONSTRAINT 1: DO NOT use HTML elements (div, span, p). Use ONLY View, Text, TouchableOpacity, TextInput, Image, ScrollView, etc.",
+    "CRITICAL CONSTRAINT 2: DO NOT use Tailwind CSS or className attributes. Use strictly the `StyleSheet.create({})` API.",
+    "CRITICAL CONSTRAINT 3: DO NOT use web-only libraries.",
+    "DESIGN EXECUTION: Apply Duolingo-style 'chunky' aesthetics. Buttons and cards MUST have thick borders (`borderBottomWidth: 4`, `borderRadius: 16-20`, `borderWidth: 2`) to give a physical, tactile feel.",
+    "COMPONENTS: Build the UI using clean, declarative native components. For complex interactions like swipeable flashcards, use React Native's PanResponder or third-party native-compatible gesture libraries if instructed, else build simplified native taps.",
+    "PAGES REQUIRED: Onboarding Carousel, Login/Signup, Dashboard (Streaks/XP), Exam Selection, Question Screen, Exam Results, AI Tutor Chat, Flashcards Deck, Analytics Charts, Subscription Paywall, Profile & Settings.",
+    "STYLING TRICKS: Use `elevation` for Android shadows and `shadowColor/Offset/Opacity` for iOS shadows if depth is needed beyond the thick borders.",
+    "Make the UI highly responsive to device sizes by utilizing flexbox generously."
+  ]
+}
