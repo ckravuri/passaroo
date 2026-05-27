@@ -12,12 +12,14 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.passaroo.app",
       "usesAppleSignIn": true,
+      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "NSUserNotificationsUsageDescription": "Get daily study reminders to keep your streak alive"
       }
     },
     "android": {
       "package": "com.passaroo.app",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"

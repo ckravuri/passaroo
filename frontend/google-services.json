@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "886863684241",
+    "project_id": "passaroo",
+    "storage_bucket": "passaroo.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:886863684241:android:ac68cfa245f0bccdced530",
+        "android_client_info": {
+          "package_name": "com.passaroo.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIsIbHtT9RyXqpjftoTQ7EwjdKmXAXGsQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
