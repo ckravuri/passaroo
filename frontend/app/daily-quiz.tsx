@@ -85,11 +85,13 @@ export default function DailyQuiz() {
           <Text style={styles.resultScore}>{result.correct} / {result.total} correct</Text>
           {result.already_completed ? (
             <Text style={styles.resultNote}>You already finished today's quiz — come back tomorrow for fresh XP.</Text>
-          ) : (
+          ) : result.xp_gained > 0 ? (
             <View style={styles.xpPill}>
               <Ionicons name="flash" size={18} color="#0A2A33" />
               <Text style={styles.xpText}>+{result.xp_gained} XP earned</Text>
             </View>
+          ) : (
+            <Text style={styles.resultNote}>No XP this round — try again to earn points!</Text>
           )}
           <PButton title="Back to Home" onPress={() => router.replace("/(tabs)")} style={{ marginTop: spacing.lg, alignSelf: "stretch" }} />
           <PButton title="Review answers" variant="secondary" onPress={() => setResult(null)} style={{ marginTop: spacing.sm, alignSelf: "stretch" }} />

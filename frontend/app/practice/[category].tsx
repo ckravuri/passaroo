@@ -100,7 +100,7 @@ export default function Practice() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.topicName}>{t.topic}</Text>
-                <Text style={styles.topicMeta}>{t.count} questions{t.states.length > 0 ? ` · ${t.states.join(", ")}` : ""}</Text>
+                <Text style={styles.topicMeta}>{t.count} question{t.count === 1 ? "" : "s"}{t.states.length > 0 ? ` · ${t.states.join(", ")}` : ""}</Text>
               </View>
               <Ionicons name="chevron-forward" size={22} color={colors.textTertiary} />
             </TouchableOpacity>
