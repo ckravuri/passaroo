@@ -1,0 +1,47 @@
+{
+  "summary": "Phase 4 testing (Admin Panel + AI prompt polish). Backend pytest: 22/23 passed (95.6%). One real backend bug: POST /api/admin/questions does NOT auto-fill state from category — state stays null on the stored doc. Frontend: new /admin screen with 3 tabs (STATS / QUESTIONS / USERS) renders correctly after Expo restart, all primary controls present (admin-tab-*, admin-add-q, admin-bulk, bulk-json, bulk-run, users-search, plan chips, Ban button). Stats panel shows totals (28/234/57), Growth (24h/7d/30d signups + 7d attempts), Plan distribution, State distribution, and Per-category list (all 14 categories visible). Users tab search filtered correctly to admin@passaroo.app. AI endpoints (explain / tutor / flashcards) all responded with expected shape; flashcards parsed >=3 FRONT/BACK pairs, explain reply contained ≥1 structured cue word. Non-admin user receives 403 on every /api/admin/* endpoint; ban flow correctly invalidates the banned user's session (next /auth/me returned 401). Bulk-import correctly handled valid, invalid category (400), and partial (1 valid + 2 invalid -> {inserted:1, errors:2, total_attempted:3}). NOTE: Metro served stale admin.tsx bundle until `sudo supervisorctl restart expo` was run — caused first browser pass to show OLD admin layout (Recent attempts + single Add Question); after restart the new layout rendered. Worth flagging to main agent so they bust Metro cache after any future admin.tsx rewrite.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/admin/questions",
+        "issue": "state auto-fill broken: stored question has state=null instead of inheriting from category. Root cause in server.py admin_add_question — `doc = body.model_dump()` always contains key `state` (value None, because AdminQuestionBody.state: Optional[str] = None), so the subsequent `doc.setdefault('state', cat.get('state'))` is a no-op. `family` works only because AdminQuestionBody has no `family` field. Fix: replace setdefault with `if not doc.get('state'): doc['state'] = cat.get('state')` (and likewise for any other Optional fields that default to None such as difficulty/tags). Reproduced: POST {category_id:'dkt_vic', ...} -> response q.state == None (expected 'VIC').",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/admin USERS tab",
+       "issues": ["Plan chips (free/premium/pro) are tappable but on a small mobile width the 4-chip row (free | premium | pro | Ban) wraps tightly under the user card; tight spacing — consider 8px gap and slightly larger touch targets. Ban button is text-only, no confirmation modal — accidental tap will ban the user immediately (sessions wiped)."]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_passaroo_phase4_admin.py",
+    "/app/test_reports/pytest/pytest_phase4.xml"
+  ],
+  "action_items": [
+    "[BACKEND HIGH] Fix state auto-fill in admin_add_question (server.py): replace `doc.setdefault('state', cat.get('state'))` with explicit None-check, e.g. `if not doc.get('state'): doc['state'] = cat.get('state')`. Audit other Optional[...]=None fields in AdminQuestionBody (difficulty, tags, family) for same anti-pattern.",
+    "[UX] Add a confirmation dialog on the USERS-tab Ban button — currently a single tap immediately bans + invalidates session.",
+    "[DEVOPS NOTE] After any rewrite of admin.tsx (or other top-level screens) restart Expo with `sudo supervisorctl restart expo` — Metro served a cached old admin.tsx bundle during this run until restart."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1535 lines — consider splitting into modules (admin_routes.py, ai_routes.py, auth_routes.py) before it grows further.",
+    "Same Optional-defaults-with-setdefault pitfall in admin_add_question is a class-of-bug risk; recommend a helper `_inherit_from_cat(doc, cat, ['state','family','difficulty'])` used in both admin_add_question and bulk_import to keep behaviour identical.",
+    "AdminQuestionsCRUD edit endpoint correctly validates `correct` index against `options` length (returns 400) — verified.",
+    "Bulk-import response shape {inserted, errors:[{index,error}], total_attempted} is good for the UI; partial-failure path verified."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_passaroo_phase4_admin.py (new)"
+  ],
+  "success_rate": {"backend": "95.6% (22/23)", "frontend": "100% (all Phase 4 controls render and respond)"},
+  "seed_data_creation": "Test created 2 throwaway signup users (phase4-user-* and phase4-ban-*) and inserted 3 TEST_ questions via bulk-import (dkt_qld x2, dkt_nsw x1) plus one solo dkt_vic question that was then deleted. The throwaway users and bulk-imported TEST_ questions remain in the DB.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run `EXPO_PUBLIC_BACKEND_URL=https://ai-study-companion-30.preview.emergentagent.com python -m pytest /app/backend/tests/test_passaroo_phase4_admin.py -v` to re-verify. After fixing the state-autofill bug, TestAdminQuestionsCRUD::test_add_question_autofills_family_and_state should pass. The seeded admin (admin@passaroo.app/Passaroo!Admin2026) is is_admin=true, plan=pro. Login + onboarding skip flow: open `/`, click 'Skip' text, fill input[0]=email & input[1]=password, click [data-testid=auth-submit]. Note: admin's primary_category_id appears NOT set on the seeded record (post-login redirect goes to /select-state) — minor seeding inconsistency vs test_credentials.md but doesn't block admin route which works directly at /admin.",
+  "rca_of_issue": "BUG RCA — state field null on admin-created questions: In server.py, AdminQuestionBody is defined with `state: Optional[str] = None`. When the handler does `doc = body.model_dump()`, the resulting dict has `state: None` (key present). The fallback line `doc.setdefault('state', cat.get('state'))` does nothing because setdefault only sets when key is *missing*, not when its value is None. The `family` field happens to be inherited correctly because AdminQuestionBody has NO `family` attribute, so `model_dump()` omits it and setdefault works. MITIGATION: Use explicit None check: `if doc.get('state') is None: doc['state'] = cat.get('state')`. Same pattern should be applied to any future Optional field that needs to inherit from category."
+}

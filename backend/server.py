@@ -484,6 +484,16 @@ async def my_attempts(authorization: Optional[str] = Header(None)):
 
 
 # ---------- Routes: AI ----------
+PASSAROO_TUTOR_PERSONA = (
+    "You are Passaroo — a friendly, upbeat Australian study buddy (a young kangaroo mascot) "
+    "helping learners pass their Australian exams. Your voice is warm, plain-English, "
+    "encouraging and a bit cheeky in a kind way. Avoid jargon unless you immediately explain it. "
+    "Always be factually accurate; if you don't know, say so. Use Australian English spelling "
+    "(behaviour, learnt, kilometres). When mentioning state-specific rules, name the state. "
+    "Remind learners this is INDEPENDENT practice material, not the official government exam."
+)
+
+
 async def _llm_chat(session_id: str, system: str, user_msg: str) -> str:
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
@@ -508,16 +518,25 @@ async def ai_explain(body: AIExplainBody, authorization: Optional[str] = Header(
     correct_text = body.options[body.correct_index] if 0 <= body.correct_index < len(body.options) else "(unknown)"
     user_text = (body.options[body.user_answer_index]
                  if 0 <= body.user_answer_index < len(body.options) else "(no answer)")
+    was_wrong = body.correct_index != body.user_answer_index
+    state_hint = f" (state context: {user.get('state')})" if user.get("state") else ""
+
     prompt = (
-        f"Question: {body.question}\nOptions: {body.options}\n"
-        f"Correct answer: {correct_text}\nLearner chose: {user_text}\n"
-        "Give a concise, friendly explanation (max 4 sentences) suitable for an Australian "
-        "exam learner. If they were wrong, briefly say why their choice was wrong, then explain the correct answer."
+        f"A learner just answered an exam practice question{state_hint}.\n\n"
+        f"QUESTION: {body.question}\n"
+        f"OPTIONS: {body.options}\n"
+        f"CORRECT ANSWER: {correct_text}\n"
+        f"LEARNER CHOSE: {user_text}  ({'WRONG' if was_wrong else 'CORRECT'})\n\n"
+        "Write a short, friendly explanation in EXACTLY this structure:\n"
+        "  Line 1 — Why this is correct: <one-sentence reason>\n"
+        "  Line 2 — Common mistake: <what learners often get wrong here, in one sentence>\n"
+        "  Line 3 — Memory tip: <a tiny mnemonic or rule of thumb in <12 words>>\n\n"
+        "Total max 4 short sentences. No preamble, no bullet points, no markdown."
     )
     try:
         reply = await _llm_chat(
             f"explain_{user['user_id']}_{uuid.uuid4().hex[:8]}",
-            "You are Passaroo, a friendly Australian exam tutor. Be concise, accurate, encouraging.",
+            PASSAROO_TUTOR_PERSONA,
             prompt,
         )
     except Exception as e:
@@ -537,16 +556,44 @@ async def ai_tutor(body: AITutorBody, authorization: Optional[str] = Header(None
     if not limits["ai_tutor"]:
         raise HTTPException(402, "AI Tutor is a Premium/Pro feature. Upgrade to chat with the tutor.")
 
+    # Build rich context: category + state + recent weak topics from last 5 attempts
     cat_hint = ""
     if body.category_id:
         cat = next((c for c in CATEGORIES if c["id"] == body.category_id), None)
         if cat:
-            cat_hint = f" The learner is preparing for: {cat['name']}."
+            cat_hint = f"\nThe learner is currently preparing for: {cat['name']}."
+            if cat.get("state"):
+                cat_hint += f" State: {cat['state']}."
+    user_state = user.get("state")
+    state_hint = f"\nLearner's home state/territory: {user_state}." if user_state else ""
+
+    # Pull recent weak topics
+    recent = await db.exam_attempts.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "wrong_qids": 1}
+    ).sort("created_at", -1).limit(5).to_list(5)
+    wrong_qids: List[str] = []
+    for a in recent:
+        wrong_qids.extend(a.get("wrong_qids", []) or [])
+    weak_hint = ""
+    if wrong_qids:
+        weak_topics_cursor = await db.questions.find(
+            {"question_id": {"$in": wrong_qids[:30]}}, {"_id": 0, "topic": 1}
+        ).to_list(30)
+        topic_counts: Dict[str, int] = {}
+        for q in weak_topics_cursor:
+            topic_counts[q["topic"]] = topic_counts.get(q["topic"], 0) + 1
+        if topic_counts:
+            top3 = sorted(topic_counts.items(), key=lambda x: -x[1])[:3]
+            weak_hint = "\nRecent weak topics for this learner: " + ", ".join(t for t, _ in top3) + "."
 
     system = (
-        "You are Passaroo, an upbeat Australian exam-prep tutor. "
-        "Keep answers concise (under 6 sentences), accurate, and encouraging. "
-        "Always remind learners this is independent practice content, not official." + cat_hint
+        PASSAROO_TUTOR_PERSONA
+        + cat_hint
+        + state_hint
+        + weak_hint
+        + "\n\nKeep replies under 6 sentences. If asked about a topic this learner is weak on, "
+        "naturally weave in a tiny revision tip. End with a single energetic line of encouragement "
+        "or a follow-up question to keep them learning. Never say you are an AI — you are Passaroo."
     )
     try:
         reply = await _llm_chat(body.session_id, system, body.message)
@@ -572,22 +619,33 @@ async def ai_flashcards(body: FlashcardGenBody, authorization: Optional[str] = H
     if not cat:
         raise HTTPException(404, "Category not found")
     topics = ", ".join(body.wrong_topics) if body.wrong_topics else "general weak areas"
+    n = max(3, min(body.count, 8))
+    state_line = f" State context: {cat['state']}." if cat.get("state") else ""
     prompt = (
-        f"Generate exactly {min(body.count, 8)} concise study flashcards for {cat['name']} on these topics: {topics}. "
-        "Respond as a numbered list. Each item must be:\n"
-        "FRONT: <short question or concept>\nBACK: <clear 1–2 sentence answer>\n\n"
-        "Make them practical, Australia-specific where relevant, and original (not copied from official exams)."
+        f"Generate EXACTLY {n} ORIGINAL spaced-repetition flashcards for the exam: {cat['name']}.{state_line}\n"
+        f"Focus topics: {topics}.\n\n"
+        "RULES:\n"
+        " - FRONT must be a short, specific question OR a key concept prompt (max 12 words).\n"
+        " - BACK must be a precise 1–2 sentence answer that teaches the rule, with Australian context.\n"
+        " - Make them ATOMIC (one fact per card), original, and never copied from official exam wording.\n"
+        " - Use plain English; Australian spelling.\n\n"
+        "OUTPUT FORMAT — strictly, no preamble, no markdown:\n"
+        "FRONT: <text>\n"
+        "BACK: <text>\n"
+        "FRONT: <text>\n"
+        "BACK: <text>\n"
+        "...(repeat for all cards)..."
     )
     try:
         reply = await _llm_chat(
             f"flash_{user['user_id']}_{uuid.uuid4().hex[:8]}",
-            "You write study flashcards for Australian exam prep. Output is plain text, easy to parse.",
+            "You are Passaroo, an Australian exam-prep tutor. Produce clean, parseable study flashcards.",
             prompt,
         )
     except Exception as e:
         log.exception("AI flashcards failed")
         raise HTTPException(502, f"AI service error: {e}")
-    # naive parse
+    # parse FRONT/BACK pairs
     cards = []
     cur = {}
     for line in reply.splitlines():
@@ -596,7 +654,7 @@ async def ai_flashcards(body: FlashcardGenBody, authorization: Optional[str] = H
             if cur.get("front") and cur.get("back"):
                 cards.append(cur)
             cur = {"front": s.split(":", 1)[1].strip(), "back": ""}
-        elif s.upper().startswith("BACK:"):
+        elif s.upper().startswith("BACK:") and cur.get("front"):
             cur["back"] = s.split(":", 1)[1].strip()
     if cur.get("front") and cur.get("back"):
         cards.append(cur)
@@ -730,7 +788,7 @@ async def admin_list_questions(category_id: Optional[str] = None,
                                authorization: Optional[str] = Header(None)):
     await require_admin(authorization)
     flt = {"category_id": category_id} if category_id else {}
-    qs = await db.questions.find(flt, {"_id": 0}).to_list(1000)
+    qs = await db.questions.find(flt, {"_id": 0}).to_list(2000)
     return {"questions": qs, "count": len(qs)}
 
 
@@ -744,9 +802,44 @@ async def admin_add_question(body: AdminQuestionBody, authorization: Optional[st
     doc = body.model_dump()
     doc["question_id"] = make_id("q")
     doc["created_at"] = now()
+    cat = next((c for c in CATEGORIES if c["id"] == body.category_id), None)
+    if cat:
+        doc.setdefault("family", cat.get("family"))
+        doc.setdefault("state", cat.get("state"))
+    doc.setdefault("tags", [])
+    doc.setdefault("learning_objectives", [])
     await db.questions.insert_one(doc)
     doc.pop("_id", None)
     return {"question": doc}
+
+
+class AdminQuestionUpdate(BaseModel):
+    topic: Optional[str] = None
+    question: Optional[str] = None
+    options: Optional[List[str]] = None
+    correct: Optional[int] = None
+    explanation: Optional[str] = None
+    difficulty: Optional[str] = None
+    tags: Optional[List[str]] = None
+    learning_objectives: Optional[List[str]] = None
+
+
+@api.patch("/admin/questions/{question_id}")
+async def admin_update_question(question_id: str, body: AdminQuestionUpdate,
+                                authorization: Optional[str] = Header(None)):
+    await require_admin(authorization)
+    update = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "options" in update and "correct" in update:
+        if not (0 <= update["correct"] < len(update["options"])):
+            raise HTTPException(400, "correct index out of range")
+    if not update:
+        raise HTTPException(400, "No fields to update")
+    update["updated_at"] = now()
+    res = await db.questions.update_one({"question_id": question_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Question not found")
+    refreshed = await db.questions.find_one({"question_id": question_id}, {"_id": 0})
+    return {"question": refreshed}
 
 
 @api.delete("/admin/questions/{question_id}")
@@ -756,11 +849,92 @@ async def admin_delete_question(question_id: str, authorization: Optional[str] =
     return {"deleted": res.deleted_count}
 
 
-@api.get("/admin/users")
-async def admin_list_users(authorization: Optional[str] = Header(None)):
+class AdminBulkImportBody(BaseModel):
+    category_id: str
+    questions: List[Dict[str, Any]]
+
+
+@api.post("/admin/questions/bulk-import")
+async def admin_bulk_import(body: AdminBulkImportBody, authorization: Optional[str] = Header(None)):
+    """Bulk-import questions. Each item must have: topic, question, options (4), correct, explanation."""
     await require_admin(authorization)
-    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(500)
-    return {"users": users}
+    cat = next((c for c in CATEGORIES if c["id"] == body.category_id), None)
+    if not cat:
+        raise HTTPException(400, "Invalid category_id")
+    inserted = 0
+    errors: List[Dict[str, Any]] = []
+    for i, q in enumerate(body.questions):
+        required = ["topic", "question", "options", "correct", "explanation"]
+        missing = [k for k in required if k not in q]
+        if missing:
+            errors.append({"index": i, "error": f"Missing fields: {missing}"})
+            continue
+        if not isinstance(q["options"], list) or len(q["options"]) < 2:
+            errors.append({"index": i, "error": "Options must be a list of >=2 strings"})
+            continue
+        if not (0 <= int(q["correct"]) < len(q["options"])):
+            errors.append({"index": i, "error": "correct index out of range"})
+            continue
+        doc = {
+            "question_id": make_id("q"),
+            "category_id": body.category_id,
+            "family": cat.get("family"),
+            "state": q.get("state") or cat.get("state"),
+            "topic": q["topic"],
+            "difficulty": q.get("difficulty", "medium"),
+            "question": q["question"],
+            "options": q["options"],
+            "correct": int(q["correct"]),
+            "explanation": q["explanation"],
+            "tags": q.get("tags", []),
+            "learning_objectives": q.get("learning_objectives", []),
+            "created_at": now(),
+        }
+        try:
+            await db.questions.insert_one(doc)
+            inserted += 1
+        except Exception as e:
+            errors.append({"index": i, "error": str(e)})
+    return {"inserted": inserted, "errors": errors, "total_attempted": len(body.questions)}
+
+
+@api.get("/admin/users")
+async def admin_list_users(q: Optional[str] = None,
+                           authorization: Optional[str] = Header(None)):
+    await require_admin(authorization)
+    flt: Dict[str, Any] = {}
+    if q:
+        flt = {"$or": [
+            {"email": {"$regex": q, "$options": "i"}},
+            {"name": {"$regex": q, "$options": "i"}},
+        ]}
+    users = await db.users.find(flt, {"_id": 0, "password_hash": 0}).limit(500).to_list(500)
+    return {"users": users, "count": len(users)}
+
+
+class AdminUserUpdate(BaseModel):
+    plan: Optional[str] = None
+    is_admin: Optional[bool] = None
+    state: Optional[str] = None
+    banned: Optional[bool] = None
+
+
+@api.patch("/admin/users/{user_id}")
+async def admin_update_user(user_id: str, body: AdminUserUpdate,
+                            authorization: Optional[str] = Header(None)):
+    await require_admin(authorization)
+    update = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "plan" in update and update["plan"] not in {"guest", "free", "premium", "pro"}:
+        raise HTTPException(400, "Invalid plan")
+    if not update:
+        raise HTTPException(400, "No fields to update")
+    res = await db.users.update_one({"user_id": user_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "User not found")
+    if update.get("banned"):
+        await db.user_sessions.delete_many({"user_id": user_id})
+    refreshed = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    return {"user": refreshed}
 
 
 class BanBody(BaseModel):
@@ -775,6 +949,52 @@ async def admin_ban(body: BanBody, authorization: Optional[str] = Header(None)):
     if body.banned:
         await db.user_sessions.delete_many({"user_id": body.user_id})
     return {"ok": True}
+
+
+@api.get("/admin/stats")
+async def admin_stats(authorization: Optional[str] = Header(None)):
+    """Detailed admin stats: per-category counts, signups today/7d/30d, attempts trend."""
+    await require_admin(authorization)
+    today = now().date()
+
+    # Per-category question + attempt counts
+    per_category = []
+    for c in CATEGORIES:
+        per_category.append({
+            "id": c["id"], "name": c["name"], "family": c.get("family"), "state": c.get("state"),
+            "question_count": await db.questions.count_documents({"category_id": c["id"]}),
+            "attempt_count": await db.exam_attempts.count_documents({"category_id": c["id"]}),
+        })
+
+    # Signups in the last 1/7/30 days
+    from datetime import timedelta
+    signups_1d = await db.users.count_documents({"created_at": {"$gte": now() - timedelta(days=1)}})
+    signups_7d = await db.users.count_documents({"created_at": {"$gte": now() - timedelta(days=7)}})
+    signups_30d = await db.users.count_documents({"created_at": {"$gte": now() - timedelta(days=30)}})
+    attempts_7d = await db.exam_attempts.count_documents({"created_at": {"$gte": now() - timedelta(days=7)}})
+
+    by_plan: Dict[str, int] = {}
+    by_state: Dict[str, int] = {}
+    async for u in db.users.find({}, {"_id": 0, "plan": 1, "state": 1}):
+        p = u.get("plan", "free")
+        by_plan[p] = by_plan.get(p, 0) + 1
+        s = u.get("state") or "unset"
+        by_state[s] = by_state.get(s, 0) + 1
+
+    return {
+        "today": today.isoformat(),
+        "totals": {
+            "users": await db.users.count_documents({}),
+            "questions": await db.questions.count_documents({}),
+            "attempts": await db.exam_attempts.count_documents({}),
+            "categories": len(CATEGORIES),
+        },
+        "signups": {"day": signups_1d, "week": signups_7d, "month": signups_30d},
+        "attempts_week": attempts_7d,
+        "by_plan": by_plan,
+        "by_state": by_state,
+        "per_category": per_category,
+    }
 
 
 # ---------- Startup ----------
