@@ -6,6 +6,7 @@ import { Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, 
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { api } from "@/src/api";
+import { PassarooBannerAd } from "@/src/ads/PassarooBannerAd";
 import { useAuth } from "@/src/auth";
 import { colors, DISCLAIMER, IMAGES, radius, spacing, typography } from "@/src/theme";
 
@@ -141,6 +142,7 @@ export default function Home() {
 
         <Text style={styles.disclaimer}>{DISCLAIMER}</Text>
       </ScrollView>
+      <PassarooBannerAd placement="dashboard-banner" testID="ad-banner-dashboard" />
     </SafeAreaView>
   );
 }

@@ -1,11 +1,13 @@
 // Exam results — score, pass probability, review with AI explanations.
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { api } from "@/src/api";
+import { PassarooBannerAd } from "@/src/ads/PassarooBannerAd";
+import { useExamInterstitialAd } from "@/src/ads/useExamInterstitialAd";
 import { PButton } from "@/src/components/PButton";
 import { colors, IMAGES, radius, spacing, typography } from "@/src/theme";
 
@@ -24,6 +26,7 @@ type ResultPayload = {
 export default function Results() {
   const router = useRouter();
   const { payload, category } = useLocalSearchParams<{ payload: string; category: string }>();
+  const { trigger: triggerInterstitial } = useExamInterstitialAd({ showEveryN: 2 });
   const data: ResultPayload | null = useMemo(() => {
     try {
       return JSON.parse(decodeURIComponent(payload ?? ""));
@@ -35,6 +38,12 @@ export default function Results() {
   const [aiTexts, setAiTexts] = useState<Record<string, string>>({});
   const [loadingIds, setLoadingIds] = useState<Record<string, boolean>>({});
   const [generatingCards, setGeneratingCards] = useState(false);
+
+  // Trigger interstitial after every 2nd exam submission (free-tier only).
+  useEffect(() => {
+    if (data) triggerInterstitial();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.attempt_id]);
 
   if (!data) {
     return (
@@ -172,6 +181,7 @@ export default function Results() {
 
         <PButton title="Back to Home" onPress={() => router.replace("/(tabs)")} testID="results-home" />
       </ScrollView>
+      <PassarooBannerAd placement="results-banner" testID="ad-banner-results" />
     </SafeAreaView>
   );
 }

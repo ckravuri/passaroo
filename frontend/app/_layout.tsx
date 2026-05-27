@@ -10,6 +10,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider } from "@/src/auth";
+import { initMobileAds } from "@/src/ads/initAds";
 
 // Module-scope push handlers (per Emergent push playbook).
 if (Platform.OS !== "web") {
@@ -51,6 +52,8 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (Platform.OS === "web") return;
+    // Initialize AdMob SDK once at app launch (no-op in Expo Go/web).
+    initMobileAds().catch((e) => console.warn("[ads] init at startup failed", e));
 
     const tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
       const data: any = response.notification.request.content.data || {};
