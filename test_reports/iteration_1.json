@@ -1,0 +1,41 @@
+{
+  "summary": "Passaroo backend first-pass: 23/23 pytest tests pass. Covered health, categories, email signup/login (success + duplicate + wrong-password), /auth/me + missing-token, exam questions (no correct/explanation leak), attempt submission + history, user stats, plan upgrade, AI explain (Gemini 3 Flash 200 in ~2s), AI tutor (premium 200 / free 402), weekly exam limit (free user 3rd call -> 429), admin login + analytics + add-question + non-admin 403, and logout invalidation. Found and fixed 1 critical bug: email signup endpoint returned 500 because motor's insert_one mutates the dict to add MongoDB ObjectId _id, which FastAPI then failed to JSON-serialize on the response. Applied minimal fix (pop _id) in both /auth/email/signup and /auth/google/session. All AI calls to Gemini 3 Flash via Emergent LLM key responded successfully.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/email/signup, POST /api/auth/google/session", "issue": "FIXED — motor's insert_one mutates the inserted dict to attach Mongo ObjectId _id; the dict was then returned in the response and FastAPI's jsonable_encoder failed with 'ObjectId object is not iterable' -> 500. Added user_doc.pop('_id', None) before return in both endpoints."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_passaroo_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Apply the same _id-pop guard to any other endpoint that returns a dict immediately after insert_one (currently only signup/google_session; admin_add_question already pops _id; submit_exam already pops). Consider a tiny helper like clean_doc(d) to make this consistent.",
+    "(Optional) Add response_model on auth endpoints so MongoDB internal fields can never leak.",
+    "Frontend testing skipped per request (backend-only)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 783 lines — close to but under the 700-line guideline; consider splitting into routers (auth, exams, ai, admin) before further growth.",
+    "issue_session() deletes all prior sessions for the user — single-device only. This is intentional per code comment but worth documenting for the mobile client (any login on another device will silently invalidate the current token).",
+    "verify_password silently returns False on exception; OK for security but ensure logs capture bcrypt format issues during onboarding.",
+    "plan_limits is duplicated as a dict literal each call; could be a module-level constant.",
+    "/api/ai/explain enforces daily AI explanation limit but does not pop _id from response — not an issue here since it returns a plain dict that never touched insert_one."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (2 small edits: pop _id in signup + google_session)",
+    "/app/backend/tests/test_passaroo_backend.py (new — 23 tests)"
+  ],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "skipped"},
+  "seed_data_creation": "No seed data created beyond what backend seeds on startup (admin user, 30 questions per category). Test users use a per-run uuid email to avoid collisions and are left in DB; a TEST_ admin question is created and then deleted as cleanup.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Use BASE_URL = https://ai-study-companion-30.preview.emergentagent.com with /api prefix. Tests are idempotent and create a uuid-suffixed email per run. Admin creds in /app/memory/test_credentials.md. AI calls (gemini-3-flash-preview via emergentintegrations) typically respond in 1-3s during this run; if upstream is down expect 502 — tests skip in that case. Mock endpoint: POST /api/user/plan (no real Stripe/IAP).",
+  "rca_of_issue": "BUG (now fixed): POST /api/auth/email/signup -> 500. Reproduction: send {email,password,name} to the endpoint; backend logs show 'TypeError: ObjectId object is not iterable' inside fastapi.encoders.jsonable_encoder. Root cause: motor's AsyncIOMotorCollection.insert_one mutates the input dict in-place to set the freshly-assigned _id (a bson.ObjectId). The same dict (user_doc) is then returned in the response body. FastAPI's default jsonable_encoder cannot serialize bson.ObjectId, raising 500. Fix: user_doc.pop('_id', None) immediately before returning. Applied in /auth/email/signup and /auth/google/session. Verified: signup now returns 200 with session_token + user; downstream tests (login, me, exams, attempts, AI, admin, logout) all pass."
+}
