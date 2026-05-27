@@ -20,7 +20,7 @@
       "package": "com.passaroo.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "backgroundColor": "#FFFFFF"
       },
       "edgeToEdgeEnabled": true,
       "permissions": ["POST_NOTIFICATIONS"]
