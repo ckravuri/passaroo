@@ -69,7 +69,7 @@ export default function Home() {
             <Text style={styles.dailyTitle}>Daily Challenge</Text>
             <Text style={styles.dailySub}>Try a quick 10-question quiz to keep your streak alive.</Text>
             <TouchableOpacity
-              onPress={() => router.push({ pathname: "/exam/[category]", params: { category: "dkt" } })}
+              onPress={() => router.push("/daily-quiz")}
               style={styles.dailyBtn}
               testID="daily-challenge-start"
             >
@@ -77,6 +77,18 @@ export default function Home() {
               <Ionicons name="arrow-forward" size={18} color="#0A2A33" />
             </TouchableOpacity>
           </View>
+        </View>
+
+        <Text style={styles.sectionTitle}>Quick actions</Text>
+        <View style={styles.quickGrid}>
+          <QuickTile icon="library" label="Practice" color={colors.primary} onPress={() => router.push({ pathname: "/practice/[category]", params: { category: "dkt" } })} testID="quick-practice" />
+          <QuickTile icon="refresh" label="Retry Wrong" color={colors.wrong} onPress={() => router.push("/retry-wrong")} testID="quick-retry" />
+          <QuickTile icon="book" label="Reading" color={colors.primaryDark} onPress={() => router.push({ pathname: "/reading/[category]", params: { category: "dkt" } })} testID="quick-reading" />
+          <QuickTile icon="albums" label="Flashcards" color={colors.premium} onPress={() => router.push("/flashcards")} testID="quick-flashcards" />
+          <QuickTile icon="trophy" label="Achievements" color={colors.fire} onPress={() => router.push("/achievements")} testID="quick-achievements" />
+          <QuickTile icon="podium" label="Leaderboard" color={colors.correct} onPress={() => router.push("/leaderboard")} testID="quick-leaderboard" />
+          <QuickTile icon="calendar" label="Study Plan" color={colors.primaryGreenDark} onPress={() => router.push("/study-plan")} testID="quick-plan" />
+          <QuickTile icon="bookmark" label="Bookmarks" color={colors.primary} onPress={() => router.push("/bookmarks")} testID="quick-bookmarks" />
         </View>
 
         <Text style={styles.sectionTitle}>Choose your exam</Text>
@@ -123,6 +135,19 @@ function Stat({ icon, color, value, label, testID }: {
   );
 }
 
+function QuickTile({ icon, label, color, onPress, testID }: {
+  icon: any; label: string; color: string; onPress: () => void; testID?: string;
+}) {
+  return (
+    <TouchableOpacity activeOpacity={0.85} onPress={onPress} style={styles.quickTile} testID={testID}>
+      <View style={[styles.quickIcon, { backgroundColor: color + "22" }]}>
+        <Ionicons name={icon} size={22} color={color} />
+      </View>
+      <Text style={styles.quickLabel} numberOfLines={1}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: spacing.lg, gap: spacing.lg, paddingBottom: 60 },
@@ -148,6 +173,23 @@ const styles = StyleSheet.create({
   },
   statValue: { ...typography.h3, fontSize: 20 },
   statLabel: { ...typography.caption, fontSize: 12 },
+  quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, justifyContent: "space-between" },
+  quickTile: {
+    width: "22%",
+    backgroundColor: "#fff",
+    borderRadius: radius.lg,
+    borderWidth: 2,
+    borderColor: colors.border,
+    borderBottomWidth: 4,
+    paddingVertical: spacing.sm,
+    alignItems: "center",
+    gap: 6,
+  },
+  quickIcon: {
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: "center", justifyContent: "center",
+  },
+  quickLabel: { fontSize: 11, fontWeight: "700", color: colors.textPrimary, textAlign: "center", paddingHorizontal: 2 },
   dailyCard: {
     flexDirection: "row",
     backgroundColor: "#0A2A33",

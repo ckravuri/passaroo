@@ -65,6 +65,15 @@ export default function ExamRunner() {
 
   const q = data?.questions[idx];
   const progress = useMemo(() => (data ? (idx + 1) / data.questions.length : 0), [data, idx]);
+  const [bookmarked, setBookmarked] = useState<Record<string, boolean>>({});
+
+  const toggleBookmark = async () => {
+    if (!q) return;
+    try {
+      const r = await api<{ bookmarked: boolean }>(`/bookmarks/${q.question_id}`, { method: "POST" });
+      setBookmarked((b) => ({ ...b, [q.question_id]: r.bookmarked }));
+    } catch {}
+  };
 
   const pick = (i: number) => {
     setAnswers((a) => {
@@ -135,6 +144,13 @@ export default function ExamRunner() {
             {mins}:{secs}
           </Text>
         </View>
+        <TouchableOpacity onPress={toggleBookmark} testID="exam-bookmark">
+          <Ionicons
+            name={bookmarked[q.question_id] ? "bookmark" : "bookmark-outline"}
+            size={24}
+            color={bookmarked[q.question_id] ? colors.primary : colors.textSecondary}
+          />
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>

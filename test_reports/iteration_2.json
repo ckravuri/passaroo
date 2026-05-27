@@ -1,0 +1,61 @@
+{
+  "summary": "Phase-2 testing complete. All new backend endpoints (GET /exams/daily-quiz, POST /exams/daily-quiz/submit with idempotency+XP, GET /exams/{cat}/practice now exposing correct+explanation, GET /exams/{cat}/topics, GET /exams/retry-wrong with full review fields, POST /bookmarks/{qid}) verified and passing (9/9 new tests + 23/23 regression). Frontend: dashboard quick-actions grid renders all 8 tiles (Practice, Retry Wrong, Reading, Flashcards, Achievements, Leaderboard, Study Plan, Bookmarks) + Daily Challenge CTA. /daily-quiz screen loads 10 questions, supports per-question Check answer reveal, Finish quiz submits & shows result screen with XP pill. /practice/dkt shows topic picker with Mixed topics + per-topic tiles and starts a 10-question runner with instant feedback. /retry-wrong shows empty-state with 'Take a mock exam' CTA on fresh accounts and populated review on accounts with wrong answers. Exam runner bookmark toggle is wired to POST /bookmarks/{qid}. ONE CRITICAL BUG FOUND AND FIXED: /app/frontend/app/login.tsx referenced undefined variable `isApple` causing red-screen ReferenceError that blocked the entire login screen (and therefore the whole app). Added `const isApple = Platform.OS === \"ios\";` — login + all gated flows now work.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "login.tsx",
+        "issue": "ReferenceError: isApple is not defined caused red-screen on the entire LoginScreen, preventing any auth flow. FIXED by adding `const isApple = Platform.OS === \"ios\";`. Reference: /app/frontend/app/login.tsx:73",
+        "testID": "login-screen",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "daily-quiz.tsx result screen",
+        "issue": "When user scores 0/10 the XP pill still shows '+0 XP earned' (with first_completion=false). Cosmetic — consider hiding the XP pill when xp_gained==0. Reference: /app/frontend/app/daily-quiz.tsx:88-93",
+        "testID": "n/a",
+        "priority": "LOW"
+      },
+      {
+        "component": "practice/[category].tsx topic tiles",
+        "issue": "Topic tile subtitle uses 'X questions · NSW' even when X==1 ('1 questions'). Pluralization nit. Reference: /app/frontend/app/practice/[category].tsx",
+        "testID": "practice-topic-*",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_passaroo_new_endpoints.py",
+    "/app/backend/tests/test_passaroo_backend.py",
+    "/app/test_reports/pytest/pytest_new_endpoints.xml",
+    "/app/test_reports/pytest/pytest_regression.xml"
+  ],
+  "action_items": [
+    "(Optional) Hide XP pill on daily-quiz result screen when xp_gained == 0 (already_completed false but 0 correct).",
+    "(Optional) Fix '1 questions' pluralization on practice topic tiles.",
+    "Phase-2 P0 work is verified — proceed."
+  ],
+  "critical_code_review_comments": [
+    "login.tsx had an undefined `isApple` reference that would fail builds on web and any platform — added safe guard.",
+    "server.py is 1227 lines and approaching the 700-line guideline; consider modularising into routers (auth, exams, gamification, ai) in a future iteration.",
+    "Daily-quiz endpoint correctly returns correct+explanation only because route requires auth; ensure this is acceptable for the product (answers exposed before submission). If not, gate behind submission like the legacy practice endpoint."
+  ],
+  "updated_files": [
+    "/app/frontend/app/login.tsx (fixed isApple reference)",
+    "/app/backend/tests/test_passaroo_new_endpoints.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (32/32 across new+regression tests)",
+    "frontend": "100% (all P0 flows: login, dashboard quick-actions, daily-quiz, practice picker+runner, retry-wrong empty+populated)"
+  },
+  "seed_data_creation": "Created two test users via /api/auth/email/signup: one fresh (for retry-wrong empty state) and one with a deliberately-wrong 25-question DKT attempt (for retry-wrong populated state). Credentials saved to /tmp/ui_creds.txt and /tmp/retry_creds.txt.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend public URL is read from frontend/.env EXPO_BACKEND_URL (https://ai-study-companion-30.preview.emergentagent.com). Pytest suite is at /app/backend/tests/ — run with `pytest /app/backend/tests/ -v`. UI testing requires mobile viewport 390x844. Login flow uses testIDs auth-email, auth-password, auth-submit; signup uses auth-toggle + signup-name. Dashboard quick-action testIDs: quick-practice, quick-retry, quick-reading, quick-flashcards, quick-achievements, quick-leaderboard, quick-plan, quick-bookmarks, daily-challenge-start. Daily-quiz screen testID: daily-quiz-screen. Practice picker testID: practice-picker; topic tiles: practice-topic-all / practice-topic-{name}. Practice runner testID: practice-runner. Retry-wrong screen testID: retry-wrong-screen. Note: SuprSend push not testable on web — skip.",
+  "rca_of_issue": "RCA for login red-screen: During refactor that added Apple Sign-In to /app/frontend/app/login.tsx, the conditional render `{isApple && (...)}` at line 151 was introduced but the corresponding `const isApple = ...` declaration was never added. On web, Platform.OS !== 'ios' so the Apple button is never rendered, but JS evaluation of `isApple` itself throws ReferenceError because the identifier is not in scope (no `var isApple` hoist either). Mitigation: declared `const isApple = Platform.OS === 'ios';` alongside the other OAuth handlers (line 73). Verified by reloading /login — screen now renders, signup + signin succeed end-to-end."
+}

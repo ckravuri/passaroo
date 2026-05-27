@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import * as AppleAuthentication from "expo-apple-authentication";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "@/src/auth";
@@ -21,7 +22,7 @@ import { colors, DISCLAIMER, IMAGES, radius, spacing, typography } from "@/src/t
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signInEmail, signUpEmail, signInGoogle } = useAuth();
+  const { signInEmail, signUpEmail, signInGoogle, signInApple, signInMicrosoft } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -54,11 +55,11 @@ export default function LoginScreen() {
     }
   };
 
-  const onGoogle = async () => {
+  const runOAuth = async (kind: "google" | "apple" | "microsoft", fn: () => Promise<void>) => {
     setError(null);
-    setLoading("google");
+    setLoading(kind);
     try {
-      await signInGoogle();
+      await fn();
       router.replace("/(tabs)");
     } catch (e: any) {
       setError(e.message);
@@ -66,6 +67,10 @@ export default function LoginScreen() {
       setLoading(null);
     }
   };
+  const onGoogle = () => runOAuth("google", signInGoogle);
+  const onApple = () => runOAuth("apple", signInApple);
+  const onMicrosoft = () => runOAuth("microsoft", signInMicrosoft);
+  const isApple = Platform.OS === "ios";
 
   return (
     <SafeAreaView style={styles.container} testID="login-screen">
@@ -133,14 +138,38 @@ export default function LoginScreen() {
 
           <TouchableOpacity
             testID="auth-google"
-            style={styles.googleBtn}
+            style={styles.oauthBtn}
             onPress={onGoogle}
             activeOpacity={0.85}
             disabled={loading !== null}
           >
             <Ionicons name="logo-google" size={22} color="#EA4335" />
-            <Text style={styles.googleText}>
+            <Text style={styles.oauthText}>
               {loading === "google" ? "Signing in..." : "Continue with Google"}
+            </Text>
+          </TouchableOpacity>
+
+          {isApple && (
+            <AppleAuthentication.AppleAuthenticationButton
+              testID="auth-apple"
+              buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+              cornerRadius={16}
+              style={{ height: 50, marginTop: 12 }}
+              onPress={onApple}
+            />
+          )}
+
+          <TouchableOpacity
+            testID="auth-microsoft"
+            style={[styles.oauthBtn, { marginTop: 12, backgroundColor: "#2F2F2F", borderColor: "#2F2F2F" }]}
+            onPress={onMicrosoft}
+            activeOpacity={0.85}
+            disabled={loading !== null}
+          >
+            <Ionicons name="logo-microsoft" size={22} color="#fff" />
+            <Text style={[styles.oauthText, { color: "#fff" }]}>
+              {loading === "microsoft" ? "Signing in..." : "Continue with Microsoft"}
             </Text>
           </TouchableOpacity>
 
@@ -188,7 +217,7 @@ const styles = StyleSheet.create({
   divider: { flexDirection: "row", alignItems: "center", marginVertical: spacing.lg, gap: 12 },
   line: { flex: 1, height: 2, backgroundColor: colors.border },
   dividerText: { ...typography.caption, fontWeight: "800", color: colors.textSecondary },
-  googleBtn: {
+  oauthBtn: {
     flexDirection: "row",
     gap: 12,
     backgroundColor: "#fff",
@@ -200,7 +229,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  googleText: { ...typography.bodyLarge, fontWeight: "700" },
+  oauthText: { ...typography.bodyLarge, fontWeight: "700" },
   toggleText: { color: colors.primaryDark, fontWeight: "700", fontSize: 15 },
   disclaimer: {
     ...typography.caption,

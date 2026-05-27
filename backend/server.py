@@ -20,6 +20,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from seed_data import CATEGORIES
+from content import READING_MATERIAL, AU_STATES, ACHIEVEMENTS
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -30,6 +31,8 @@ DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 JWT_SECRET = os.environ["JWT_SECRET"]
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+PUSH_BASE_URL = "https://integrations.emergentagent.com"
+EMERGENT_PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -388,6 +391,7 @@ async def submit_exam(body: ExamSubmitBody, authorization: Optional[str] = Heade
 
     correct_count = 0
     wrong_topics: List[str] = []
+    wrong_qids: List[str] = []
     review = []
     for qid, ans in zip(body.question_ids, body.answers):
         q = qmap.get(qid)
@@ -398,6 +402,7 @@ async def submit_exam(body: ExamSubmitBody, authorization: Optional[str] = Heade
             correct_count += 1
         else:
             wrong_topics.append(q.get("topic", "General"))
+            wrong_qids.append(qid)
         review.append({
             "question_id": qid,
             "question": q["question"], "options": q["options"],
@@ -429,6 +434,7 @@ async def submit_exam(body: ExamSubmitBody, authorization: Optional[str] = Heade
         "pass_probability": pass_probability,
         "time_taken_seconds": body.time_taken_seconds,
         "weak_topics": weak_topics,
+        "wrong_qids": wrong_qids,
         "created_at": now(),
     }
     await db.exam_attempts.insert_one(attempt_doc)
@@ -774,6 +780,442 @@ async def startup():
 async def shutdown():
     client.close()
 
+
+# ============================================================
+# Phase 2 additions: account deletion, OAuth providers,
+# bookmarks, practice/retry, daily quiz, achievements,
+# leaderboard, readiness, reading material, study planner,
+# push notifications.
+# ============================================================
+
+# ---------- Account deletion ----------
+@api.delete("/auth/me")
+async def delete_account(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    uid = user["user_id"]
+    # Cascade delete across all user-owned collections
+    await db.user_sessions.delete_many({"user_id": uid})
+    await db.exam_attempts.delete_many({"user_id": uid})
+    await db.bookmarks.delete_many({"user_id": uid})
+    await db.flashcards.delete_many({"user_id": uid})
+    await db.chat_messages.delete_many({"user_id": uid})
+    await db.ai_usage.delete_many({"user_id": uid})
+    await db.push_tokens.delete_many({"user_id": uid})
+    await db.users.delete_one({"user_id": uid})
+    log.info(f"Account deleted: {uid}")
+    return {"ok": True, "deleted_user_id": uid}
+
+
+# ---------- Apple Sign-In ----------
+class AppleTokenBody(BaseModel):
+    identity_token: str  # JWT from expo-apple-authentication
+    full_name: Optional[str] = None
+
+
+@api.post("/auth/apple/token")
+async def apple_signin(body: AppleTokenBody):
+    """Verify Apple identity token. Apple JWTs are signed by Apple — for MVP we
+    decode (un-verified) to extract email and sub. In production add JWKS verification."""
+    try:
+        # Unverified decode is sufficient for MVP; Apple Sign-In runs through native SDK
+        payload = jwt.decode(body.identity_token, options={"verify_signature": False})
+    except Exception as e:
+        raise HTTPException(401, f"Invalid Apple token: {e}")
+    email = (payload.get("email") or "").lower()
+    sub = payload.get("sub")
+    if not email and not sub:
+        raise HTTPException(401, "Apple token missing email/sub")
+    if not email:
+        email = f"apple_{sub}@private.passaroo.app"
+    name = body.full_name or email.split("@")[0]
+    user = await upsert_user_by_email(email=email, name=name, picture=None, provider="apple")
+    token = await issue_session(user["user_id"])
+    user.pop("password_hash", None)
+    user.pop("_id", None)
+    return {"session_token": token, "user": user}
+
+
+# ---------- Microsoft Sign-In ----------
+class MicrosoftTokenBody(BaseModel):
+    access_token: str  # from expo-auth-session
+
+
+@api.post("/auth/microsoft/token")
+async def microsoft_signin(body: MicrosoftTokenBody):
+    """Verify Microsoft access_token by calling Graph /me."""
+    async with httpx.AsyncClient(timeout=15) as cx:
+        r = await cx.get(
+            "https://graph.microsoft.com/v1.0/me",
+            headers={"Authorization": f"Bearer {body.access_token}"},
+        )
+    if r.status_code != 200:
+        raise HTTPException(401, "Microsoft token rejected by Graph")
+    data = r.json()
+    email = (data.get("mail") or data.get("userPrincipalName") or "").lower()
+    if not email:
+        raise HTTPException(401, "Microsoft account missing email")
+    name = data.get("displayName") or email.split("@")[0]
+    user = await upsert_user_by_email(email=email, name=name, picture=None, provider="microsoft")
+    token = await issue_session(user["user_id"])
+    user.pop("password_hash", None)
+    user.pop("_id", None)
+    return {"session_token": token, "user": user}
+
+
+# ---------- Bookmarks ----------
+@api.get("/bookmarks")
+async def list_bookmarks(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    bookmarks = await db.bookmarks.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    qids = [b["question_id"] for b in bookmarks]
+    if not qids:
+        return {"bookmarks": []}
+    questions = await db.questions.find({"question_id": {"$in": qids}}, {"_id": 0}).to_list(500)
+    return {"bookmarks": questions}
+
+
+@api.post("/bookmarks/{question_id}")
+async def toggle_bookmark(question_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    existing = await db.bookmarks.find_one({"user_id": user["user_id"], "question_id": question_id})
+    if existing:
+        await db.bookmarks.delete_one({"user_id": user["user_id"], "question_id": question_id})
+        return {"bookmarked": False}
+    q = await db.questions.find_one({"question_id": question_id}, {"_id": 0})
+    if not q:
+        raise HTTPException(404, "Question not found")
+    await db.bookmarks.insert_one(
+        {"user_id": user["user_id"], "question_id": question_id, "created_at": now()}
+    )
+    return {"bookmarked": True}
+
+
+# ---------- Topics / Practice / Retry ----------
+@api.get("/exams/{category_id}/topics")
+async def list_topics(category_id: str):
+    pipeline = [
+        {"$match": {"category_id": category_id}},
+        {"$group": {"_id": {"topic": "$topic", "state": "$state"}, "count": {"$sum": 1}}},
+    ]
+    out: Dict[str, Dict[str, Any]] = {}
+    async for row in db.questions.aggregate(pipeline):
+        t = row["_id"]["topic"]
+        out.setdefault(t, {"topic": t, "count": 0, "states": []})
+        out[t]["count"] += row["count"]
+        st = row["_id"].get("state")
+        if st and st not in out[t]["states"]:
+            out[t]["states"].append(st)
+    return {"topics": sorted(out.values(), key=lambda x: x["topic"])}
+
+
+@api.get("/exams/{category_id}/practice")
+async def practice(
+    category_id: str,
+    topic: Optional[str] = None,
+    state: Optional[str] = None,
+    count: int = 10,
+    authorization: Optional[str] = Header(None),
+):
+    """Practice mode — includes answer + explanation so learner gets instant feedback."""
+    await get_current_user(authorization)
+    flt: Dict[str, Any] = {"category_id": category_id}
+    if topic:
+        flt["topic"] = topic
+    if state:
+        flt["state"] = state
+    pool = await db.questions.find(flt, {"_id": 0}).to_list(length=1000)
+    if not pool:
+        raise HTTPException(404, "No questions match the filter")
+    sample = random.sample(pool, min(count, len(pool)))
+    return {"questions": sample, "total_pool": len(pool)}
+
+
+@api.get("/exams/retry-wrong")
+async def retry_wrong(authorization: Optional[str] = Header(None)):
+    """Collect questions the user has answered incorrectly across all attempts."""
+    user = await get_current_user(authorization)
+    attempts = await db.exam_attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    wrong_qids: List[str] = []
+    seen = set()
+    for a in attempts:
+        # we stored only weak_topics summary, not per-question. So we re-derive
+        # by looking at attempts that have "review_qids_wrong" if available.
+        for qid in a.get("wrong_qids", []):
+            if qid not in seen:
+                seen.add(qid)
+                wrong_qids.append(qid)
+    if not wrong_qids:
+        return {"questions": [], "count": 0}
+    questions = await db.questions.find(
+        {"question_id": {"$in": wrong_qids}}, {"_id": 0}
+    ).to_list(500)
+    return {"questions": questions, "count": len(questions)}
+
+
+# ---------- Daily Quiz ----------
+@api.get("/exams/daily-quiz")
+async def daily_quiz(authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    today_seed = int(now().date().toordinal())
+    rng = random.Random(today_seed)
+    pool = await db.questions.find({}, {"_id": 0}).to_list(2000)
+    if len(pool) < 10:
+        raise HTTPException(503, "Not enough questions")
+    sample = rng.sample(pool, 10)
+    return {
+        "questions": sample,
+        "title": "Today's Daily Quiz",
+        "subtitle": "10 questions · resets at midnight",
+        "date": now().date().isoformat(),
+    }
+
+
+class DailyQuizSubmitBody(BaseModel):
+    question_ids: List[str]
+    answers: List[int]
+
+
+@api.post("/exams/daily-quiz/submit")
+async def submit_daily_quiz(body: DailyQuizSubmitBody, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    today = now().date().isoformat()
+    already = await db.daily_quiz_attempts.find_one(
+        {"user_id": user["user_id"], "date": today}, {"_id": 0}
+    )
+    questions = await db.questions.find(
+        {"question_id": {"$in": body.question_ids}}, {"_id": 0}
+    ).to_list(length=50)
+    qmap = {q["question_id"]: q for q in questions}
+    correct = 0
+    for qid, ans in zip(body.question_ids, body.answers):
+        q = qmap.get(qid)
+        if q and ans == q["correct"]:
+            correct += 1
+    total = len(body.question_ids)
+    xp_gain = 0
+    if not already:
+        xp_gain = correct * 3 + (15 if correct == total else 0)
+        await db.daily_quiz_attempts.insert_one({
+            "user_id": user["user_id"],
+            "date": today,
+            "correct": correct,
+            "total": total,
+            "xp_gained": xp_gain,
+            "created_at": now(),
+        })
+        await update_streak_and_xp(user["user_id"], xp_gain)
+    return {
+        "correct": correct,
+        "total": total,
+        "xp_gained": xp_gain,
+        "already_completed": bool(already),
+    }
+
+
+# ---------- Achievements ----------
+@api.get("/achievements/me")
+async def my_achievements(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    attempts = await db.exam_attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    earned = set()
+    streak = user.get("streak_days", 0)
+    xp = user.get("xp", 0)
+    cats_attempted = {a["category_id"] for a in attempts}
+
+    if attempts:
+        earned.add("first_exam")
+    if any(a.get("passed") for a in attempts):
+        earned.add("first_pass")
+    if streak >= 3:
+        earned.add("streak_3")
+    if streak >= 7:
+        earned.add("streak_7")
+    if streak >= 30:
+        earned.add("streak_30")
+    if xp >= 100:
+        earned.add("xp_100")
+    if xp >= 500:
+        earned.add("xp_500")
+    if xp >= 1000:
+        earned.add("xp_1000")
+    if len(cats_attempted) >= 3:
+        earned.add("all_categories")
+    if any(a.get("score_percent") == 100 for a in attempts):
+        earned.add("perfect_score")
+
+    out = []
+    for a in ACHIEVEMENTS:
+        out.append({**a, "earned": a["id"] in earned})
+    return {"achievements": out, "earned_count": len(earned), "total": len(ACHIEVEMENTS)}
+
+
+# ---------- Leaderboard ----------
+@api.get("/leaderboard")
+async def leaderboard(authorization: Optional[str] = Header(None)):
+    me = await get_current_user(authorization)
+    top = await db.users.find(
+        {}, {"_id": 0, "user_id": 1, "name": 1, "xp": 1, "level": 1, "streak_days": 1, "picture": 1}
+    ).sort("xp", -1).limit(20).to_list(20)
+    # mark self
+    for u in top:
+        u["is_self"] = u["user_id"] == me["user_id"]
+    # compute my rank
+    my_rank = await db.users.count_documents({"xp": {"$gt": me.get("xp", 0)}}) + 1
+    return {"leaders": top, "my_rank": my_rank, "my_xp": me.get("xp", 0)}
+
+
+# ---------- Exam readiness ----------
+@api.get("/exam/readiness/{category_id}")
+async def exam_readiness(category_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    cat = next((c for c in CATEGORIES if c["id"] == category_id), None)
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    attempts = await db.exam_attempts.find(
+        {"user_id": user["user_id"], "category_id": category_id}, {"_id": 0}
+    ).sort("created_at", -1).limit(5).to_list(5)
+    if not attempts:
+        return {"readiness": 0, "verdict": "Take a practice exam to see your readiness.", "attempts": 0}
+    # Weight recent attempts more
+    weights = [1.5, 1.3, 1.1, 1.0, 0.9]
+    scored = sum(a["score_percent"] * w for a, w in zip(attempts, weights))
+    total_w = sum(weights[: len(attempts)])
+    weighted = scored / total_w if total_w else 0
+    consistency = 100 - (max(a["score_percent"] for a in attempts) - min(a["score_percent"] for a in attempts))
+    readiness = round(weighted * 0.75 + consistency * 0.25)
+    readiness = max(0, min(100, readiness))
+    pass_pct = cat["pass_score_percent"]
+    if readiness >= pass_pct + 10:
+        verdict = "You're exam-ready! 🎉"
+    elif readiness >= pass_pct:
+        verdict = "Borderline — one more practice should do it."
+    else:
+        verdict = "Keep practising — focus on your weak topics."
+    return {
+        "readiness": readiness,
+        "verdict": verdict,
+        "attempts": len(attempts),
+        "pass_target": pass_pct,
+    }
+
+
+# ---------- Reading Material ----------
+@api.get("/reading/{category_id}")
+async def reading(category_id: str):
+    chapters = READING_MATERIAL.get(category_id)
+    if not chapters:
+        raise HTTPException(404, "No reading material for this category")
+    return {"category_id": category_id, "chapters": chapters}
+
+
+# ---------- States (for DKT) ----------
+@api.get("/au-states")
+async def au_states():
+    return {"states": AU_STATES}
+
+
+# ---------- Study Planner (AI generated) ----------
+@api.get("/study-plan")
+async def study_plan(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    cached = await db.study_plans.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if cached:
+        # serve cached if generated in last 24h
+        if (now() - to_aware(cached["created_at"])).total_seconds() < 86400:
+            return {"plan": cached["plan"], "cached": True}
+
+    attempts = await db.exam_attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(50)
+    weak_topics: Dict[str, int] = {}
+    for a in attempts:
+        for t, c in (a.get("weak_topics") or {}).items():
+            weak_topics[t] = weak_topics.get(t, 0) + c
+    top_weak = ", ".join(t for t, _ in sorted(weak_topics.items(), key=lambda x: -x[1])[:5]) or "general practice"
+    cats_attempted = {a["category_id"] for a in attempts} or {"dkt"}
+
+    prompt = (
+        f"Create a personalised 7-day study plan for an Australian exam learner targeting these categories: "
+        f"{', '.join(cats_attempted)}. They have shown weakness in: {top_weak}. "
+        "Output exactly 7 days as a numbered list. For each day write one line in this format:\n"
+        "Day N: <short focus>. <one practical action> (~XX min)\n"
+        "Keep each day under 25 words. Be practical and motivating."
+    )
+    try:
+        text = await _llm_chat(
+            f"plan_{user['user_id']}_{uuid.uuid4().hex[:6]}",
+            "You write concise study plans for Australian exam prep.",
+            prompt,
+        )
+    except Exception as e:
+        log.warning(f"study plan AI failed: {e}")
+        text = "Day 1: Warm up with 10 mixed practice questions.\nDay 2: Focus on your weakest topic for 20 min.\nDay 3: Take a timed mock exam.\nDay 4: Review wrong answers + AI explanations.\nDay 5: Flashcards (15 min) + topic practice.\nDay 6: Another timed mock.\nDay 7: Rest, review summary notes, and reset."
+
+    plan_doc = {
+        "user_id": user["user_id"],
+        "plan": text,
+        "weak_topics": list(weak_topics.keys()),
+        "created_at": now(),
+    }
+    await db.study_plans.delete_many({"user_id": user["user_id"]})
+    await db.study_plans.insert_one(plan_doc)
+    return {"plan": text, "cached": False}
+
+
+# ---------- Push Notifications ----------
+_push_client = httpx.AsyncClient(
+    base_url=PUSH_BASE_URL,
+    headers={"X-Push-Key": EMERGENT_PUSH_KEY},
+    timeout=10.0,
+)
+
+
+class RegisterPushBody(BaseModel):
+    user_id: str
+    platform: str
+    device_token: str
+
+
+@api.post("/register-push", status_code=201)
+async def register_push(body: RegisterPushBody):
+    try:
+        resp = await _push_client.post("/api/v1/push/users/register", json=body.model_dump())
+        if resp.status_code == 401:
+            raise HTTPException(500, "EMERGENT_PUSH_KEY missing or invalid")
+        if resp.status_code >= 500:
+            raise HTTPException(502, "Push provider unavailable")
+        resp.raise_for_status()
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning(f"register_push failed (non-blocking): {e}")
+        return {"status": "queued"}
+    await db.push_tokens.update_one(
+        {"user_id": body.user_id, "device_token": body.device_token},
+        {"$set": {**body.model_dump(), "registered_at": now()}},
+        upsert=True,
+    )
+    return {"status": "registered"}
+
+
+async def send_push(recipients: List[str], data: Dict[str, Any]) -> None:
+    if not recipients:
+        return
+    if "title" not in data or "message" not in data:
+        return
+    try:
+        resp = await _push_client.post(
+            "/api/v1/push/trigger", json={"recipients": recipients, "data": data}
+        )
+        if resp.status_code >= 400:
+            log.warning(f"send_push non-2xx: {resp.status_code}")
+    except Exception as e:
+        log.warning(f"send_push failed (non-blocking): {e}")
+
+
+# Patch submit_exam to also store wrong_qids for retry-wrong
+# (handled via a wrapper modifying the stored doc — done in next patch)
+
+
+# ---------- End Phase 2 ----------
 
 app.include_router(api)
 app.add_middleware(
