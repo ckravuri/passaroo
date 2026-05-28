@@ -7,6 +7,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { Platform } from "react-native";
 
 import { api, clearToken, getToken, setToken } from "@/src/api";
+import RevenueCat from "@/src/iap";
 import { registerForPush } from "@/src/push";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -56,6 +57,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setUserAndRegister = async (u: User) => {
     setUser(u);
     registerForPush(u.user_id).catch(() => {});
+    // Bind this user to RevenueCat (no-op on web or if RC keys aren't set yet)
+    RevenueCat.logIn(u.user_id).catch(() => {});
   };
 
   const refresh = async () => {
@@ -175,6 +178,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await api("/auth/logout", { method: "POST" });
     } catch {}
+    await RevenueCat.logOut().catch(() => {});
     await clearToken();
     setUser(null);
   };

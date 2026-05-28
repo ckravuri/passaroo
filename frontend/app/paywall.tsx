@@ -21,6 +21,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { PButton } from "@/src/components/PButton";
+import RevenueCat from "@/src/iap";
 import { colors, IMAGES, radius, spacing, typography } from "@/src/theme";
 
 type Period = "monthly" | "yearly";
@@ -119,20 +120,75 @@ export default function Paywall() {
           );
           return;
         }
-        // For percent/fixed, we'd hand off the discount to RevenueCat at checkout
+        // For percent/fixed, RC discount happens at checkout (Apple/Play handle it).
       }
-      // TODO: When RevenueCat is wired:
-      //   const offering = await Purchases.getOfferings();
-      //   const pkg = period === 'yearly' ? offering.current?.annual : offering.current?.monthly;
-      //   await Purchases.purchasePackage(pkg);
-      //   then call /api/iap/link-rc-user
-      // For now we fall back to the mock /user/plan endpoint.
+
+      // ── Real in-app purchase via RevenueCat ───────────────────────
+      if (RevenueCat.isEnabled) {
+        const offering = await RevenueCat.getCurrentOffering();
+        if (!offering) {
+          throw new Error("Subscription products unavailable right now. Try again in a moment.");
+        }
+        // Find matching package: Premium uses RC built-in ids, Pro uses our custom ids
+        const isYearly = period === "yearly";
+        let pkg = null as any;
+        if (tier === "premium") {
+          pkg = isYearly ? offering.annual : offering.monthly;
+        } else if (tier === "pro") {
+          pkg = offering.availablePackages.find(
+            (p: any) => p.identifier === (isYearly ? "pro_yearly" : "pro_monthly"),
+          );
+        }
+        if (!pkg) {
+          throw new Error(`No matching ${tier} ${period} package configured in RevenueCat.`);
+        }
+        const result = await RevenueCat.purchasePackage(pkg);
+        if (result.userCancelled) {
+          return; // user backed out — no error
+        }
+        // The RC webhook will sync the entitlement to backend. Force-refresh anyway.
+        await refresh();
+        Alert.alert(
+          "🎉 You're now " + tier.toUpperCase() + "!",
+          "Thanks for upgrading. Enjoy unlimited learning!",
+          [{ text: "Let's go", onPress: () => router.back() }],
+        );
+        return;
+      }
+
+      // ── Fallback (no RC keys yet — dev mock) ─────────────────────
       await api("/user/plan", { method: "POST", body: { plan: tier } });
       await refresh();
       Alert.alert(
-        "Subscription updated",
-        `You're now on the ${tier.toUpperCase()} plan (mock). Real in-app purchases unlock once RevenueCat keys are wired.`,
+        "Subscription updated (mock)",
+        `You're now on the ${tier.toUpperCase()} plan in dev mode. Real in-app purchases will be enabled once RevenueCat keys are deployed.`,
         [{ text: "OK", onPress: () => router.back() }],
+      );
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setUpgrading(null);
+    }
+  };
+
+  const restorePurchases = async () => {
+    if (!RevenueCat.isEnabled) {
+      Alert.alert(
+        "Not available",
+        "Restore purchases is only available on the iOS and Android app builds.",
+      );
+      return;
+    }
+    setUpgrading("__restore__");
+    try {
+      const info = await RevenueCat.restorePurchases();
+      await refresh();
+      const hasAny = info && (
+        RevenueCat.hasEntitlement(info, "premium") || RevenueCat.hasEntitlement(info, "pro")
+      );
+      Alert.alert(
+        hasAny ? "✅ Purchases restored" : "Nothing to restore",
+        hasAny ? "Your subscription has been re-applied." : "We didn't find any active subscription on this Apple/Google account.",
       );
     } catch (e: any) {
       setErr(e.message);
@@ -327,6 +383,11 @@ export default function Paywall() {
           service available for everyone. Subscriptions auto-renew until cancelled. Manage from your App Store or
           Google Play settings.
         </Text>
+
+        <TouchableOpacity onPress={restorePurchases} style={styles.restoreBtn} testID="restore-purchases">
+          <Ionicons name="refresh" size={16} color={colors.primaryDark} />
+          <Text style={styles.restoreText}>Restore Purchases</Text>
+        </TouchableOpacity>
         <View style={{ flexDirection: "row", justifyContent: "center", gap: 12, marginTop: 8, flexWrap: "wrap" }}>
           <TouchableOpacity onPress={() => router.push("/terms")} testID="link-terms">
             <Text style={styles.link}>Terms of Service</Text>
@@ -529,4 +590,9 @@ const styles = StyleSheet.create({
   disclaimer: { ...typography.caption, fontSize: 11, textAlign: "center", color: colors.textTertiary, marginTop: spacing.md },
   link: { fontSize: 12, fontWeight: "700", color: colors.primaryDark, textDecorationLine: "underline" },
   linkSep: { color: colors.textTertiary, fontSize: 12 },
+  restoreBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    paddingVertical: 10, marginTop: spacing.sm,
+  },
+  restoreText: { color: colors.primaryDark, fontWeight: "800", fontSize: 14, textDecorationLine: "underline" },
 });
