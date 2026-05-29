@@ -135,8 +135,11 @@ export default function Paywall() {
         if (tier === "premium") {
           pkg = isYearly ? offering.annual : offering.monthly;
         } else if (tier === "pro") {
+          // Accept either "pro_annual" (RC default convention) or legacy "pro_yearly"
           pkg = offering.availablePackages.find(
-            (p: any) => p.identifier === (isYearly ? "pro_yearly" : "pro_monthly"),
+            (p: any) =>
+              p.identifier === (isYearly ? "pro_annual" : "pro_monthly") ||
+              p.identifier === (isYearly ? "pro_yearly" : "pro_monthly"),
           );
         }
         if (!pkg) {
