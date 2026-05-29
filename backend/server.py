@@ -824,12 +824,27 @@ class PlanChangeBody(BaseModel):
 
 @api.post("/user/plan")
 async def change_plan(body: PlanChangeBody, authorization: Optional[str] = Header(None)):
-    """Mock subscription upgrade — in production hook to in-app purchase / Stripe."""
+    """
+    Admin-only plan change endpoint.
+
+    Real user subscription upgrades MUST flow through Apple/Google In-App Purchase
+    and the RevenueCat webhook (`POST /api/iap/revenuecat-webhook`) — never this route.
+    This endpoint is retained ONLY so admins can manually grant/revoke tiers for support
+    cases (refunds, comp accounts, demo testers, etc.). All non-admin calls return 403.
+    """
     user = await get_current_user(authorization)
+    if not user.get("is_admin"):
+        raise HTTPException(
+            403,
+            "Subscription changes must go through in-app purchase. Contact support if you need help.",
+        )
     if body.plan not in {"free", "premium", "pro"}:
         raise HTTPException(400, "Invalid plan")
-    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": body.plan}})
-    return {"ok": True, "plan": body.plan}
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"plan": body.plan, "subscription_provider": "admin_grant"}},
+    )
+    return {"ok": True, "plan": body.plan, "granted_by": "admin"}
 
 
 class ProfileUpdateBody(BaseModel):
