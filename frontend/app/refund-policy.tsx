@@ -35,7 +35,7 @@ export default function RefundPolicy() {
         {
           heading: "6. Your Australian Consumer Law rights",
           body:
-            "Nothing in this policy excludes or limits your rights under the Australian Consumer Law. If Passaroo has a major failure that cannot be reasonably fixed, you may be entitled to a refund or replacement. Contact support@passaroo.app to raise an ACL claim.",
+            "Nothing in this policy excludes or limits your rights under the Australian Consumer Law. If Passaroo has a major failure that cannot be reasonably fixed, you may be entitled to a refund or replacement. Contact app.hrsupport@gmail.com to raise an ACL claim.",
         },
         {
           heading: "7. Abuse, fraud, and policy violations",
@@ -60,7 +60,7 @@ export default function RefundPolicy() {
         {
           heading: "11. Contact",
           body:
-            "For questions about this policy email support@passaroo.app. Please include your account email and (if relevant) the App Store / Play order ID.",
+            "For questions about this policy email app.hrsupport@gmail.com. Please include your account email and (if relevant) the App Store / Play order ID.",
         },
       ]}
     />

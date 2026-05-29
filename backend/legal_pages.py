@@ -58,7 +58,7 @@ def _layout(title: str, body_html: str) -> str:
       <a href="/disclaimer">Disclaimer</a>
       <a href="/support">Support</a>
     </nav>
-    <footer>© 2026 Passaroo · <a href="mailto:support@passaroo.app">support@passaroo.app</a></footer>
+    <footer>© 2026 Passaroo · <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a></footer>
   </div>
 </body>
 </html>"""
@@ -95,7 +95,7 @@ def register_legal_routes(app):
           collect, how we use it, and your rights under the Australian Privacy Principles and applicable law.</p>
 
           <h2>1. Who we are</h2>
-          <p>Passaroo is an independent educational platform. Contact: <a href="mailto:support@passaroo.app">support@passaroo.app</a>.</p>
+          <p>Passaroo is an independent educational platform. Contact: <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a>.</p>
 
           <h2>2. Information we collect</h2>
           <ul>
@@ -155,7 +155,7 @@ def register_legal_routes(app):
 
           <h2>8. Your rights</h2>
           <p>You can: access your data, correct it, port it (via account export), delete it, or withdraw
-          consent for marketing. Email <a href="mailto:support@passaroo.app">support@passaroo.app</a> with your
+          consent for marketing. Email <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a> with your
           request — we respond within 30 days.</p>
 
           <h2>9. Security</h2>
@@ -170,7 +170,7 @@ def register_legal_routes(app):
           Australian Consumer Law.</p>
 
           <h2>12. Contact</h2>
-          <p>Questions or complaints: <a href="mailto:support@passaroo.app">support@passaroo.app</a>. Unresolved
+          <p>Questions or complaints: <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a>. Unresolved
           complaints can be escalated to the Office of the Australian Information Commissioner (OAIC).</p>
         """
         return _layout("Privacy Policy", body)
@@ -249,7 +249,7 @@ def register_legal_routes(app):
           Continued use after the changes take effect means you accept the updated Terms.</p>
 
           <h2>14. Contact</h2>
-          <p>Questions about these Terms? Email <a href="mailto:support@passaroo.app">support@passaroo.app</a>.</p>
+          <p>Questions about these Terms? Email <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a>.</p>
         """
         return _layout("Terms of Service", body)
 
@@ -289,7 +289,7 @@ def register_legal_routes(app):
           <h2>6. Your Australian Consumer Law rights</h2>
           <p>Nothing in this policy excludes or limits your rights under the Australian Consumer Law. If
           Passaroo has a major failure that cannot be reasonably fixed, you may be entitled to a refund or
-          replacement. Contact <a href="mailto:support@passaroo.app">support@passaroo.app</a> to raise an ACL
+          replacement. Contact <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a> to raise an ACL
           claim.</p>
 
           <h2>7. Abuse, fraud, and policy violations</h2>
@@ -307,7 +307,7 @@ def register_legal_routes(app):
           combined unless explicitly stated.</p>
 
           <h2>10. Contact</h2>
-          <p>For questions about this policy email <a href="mailto:support@passaroo.app">support@passaroo.app</a>.
+          <p>For questions about this policy email <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a>.
           Please include your account email and (if relevant) the App Store / Play order ID.</p>
         """
         return _layout("Refund &amp; Cancellation Policy", body)
@@ -350,7 +350,7 @@ def register_legal_routes(app):
           days.</p>
 
           <h2>📧 Email support</h2>
-          <p><a href="mailto:support@passaroo.app">support@passaroo.app</a></p>
+          <p><a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a></p>
 
           <h2>Before you email — common solutions</h2>
           <ul>
@@ -367,10 +367,10 @@ def register_legal_routes(app):
           fix the question bank weekly.</p>
 
           <h2>Privacy &amp; data requests</h2>
-          <p>Want to access, export or delete your data? Email <a href="mailto:support@passaroo.app">support@passaroo.app</a>
+          <p>Want to access, export or delete your data? Email <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a>
           with the subject &ldquo;Data Request&rdquo;.</p>
 
           <h2>Business &amp; partnership enquiries</h2>
-          <p>Email <a href="mailto:support@passaroo.app">support@passaroo.app</a> with subject &ldquo;Partnership&rdquo;.</p>
+          <p>Email <a href="mailto:app.hrsupport@gmail.com">app.hrsupport@gmail.com</a> with subject &ldquo;Partnership&rdquo;.</p>
         """
         return _layout("Support", body)

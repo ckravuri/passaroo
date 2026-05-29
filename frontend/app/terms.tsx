@@ -75,7 +75,7 @@ export default function Terms() {
         {
           heading: "14. Contact",
           body:
-            "Questions about these Terms? Email support@passaroo.app.",
+            "Questions about these Terms? Email app.hrsupport@gmail.com.",
         },
       ]}
     />
