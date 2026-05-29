@@ -73,6 +73,26 @@ COPY = {
         "subtitle": "Best Value for Serious Learners",
         "badge": "BEST DEAL  •  LIMITED TIME",
     },
+    "iphone_6_5__10_exam_driving.png": {
+        "headline": "Ace Your\nDriver Test",
+        "subtitle": "DKT for NSW, VIC, QLD, WA & More",
+        "badge": "ALL AUSTRALIAN STATES",
+    },
+    "iphone_6_5__11_exam_citizenship.png": {
+        "headline": "Become an\nAussie Citizen",
+        "subtitle": "Official-Style Citizenship Practice Tests",
+        "badge": "20 QUESTIONS  •  REAL FORMAT",
+    },
+    "iphone_6_5__12_exam_forklift.png": {
+        "headline": "Get Forklift\nLicensed Fast",
+        "subtitle": "LF Knowledge Test — Done Right",
+        "badge": "WORKPLACE-READY  •  TLILIC0003",
+    },
+    "iphone_6_5__13_exam_rsa.png": {
+        "headline": "Pass Your\nRSA First Go",
+        "subtitle": "Responsible Service of Alcohol Made Easy",
+        "badge": "HOSPITALITY  •  NSW & VIC",
+    },
 }
 
 
