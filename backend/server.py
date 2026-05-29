@@ -21,6 +21,7 @@ from starlette.middleware.cors import CORSMiddleware
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from seed_data import CATEGORIES, FAMILIES
 from content import READING_MATERIAL, AU_STATES, ACHIEVEMENTS
+from legal_pages import register_legal_routes
 from subscription_config import (
     TIERS,
     SKUS,
@@ -2070,6 +2071,7 @@ async def link_revenuecat_user(body: RCLinkBody, authorization: Optional[str] = 
 
 
 app.include_router(api)
+register_legal_routes(app)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
