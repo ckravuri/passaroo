@@ -2072,6 +2072,38 @@ async def link_revenuecat_user(body: RCLinkBody, authorization: Optional[str] = 
 
 app.include_router(api)
 register_legal_routes(app)
+
+
+# ─── Temporary screenshot download endpoint ──────────────────────────────
+# Token-gated public download (no auth header, but obscure URL).
+# Safe to remove after files are downloaded.
+from fastapi.responses import FileResponse  # noqa: E402
+
+@app.get("/api/_dl/screenshots/{key}", include_in_schema=False)
+async def dl_screenshots(key: str):
+    if key != "passaroo-2026-screenshots-bundle":
+        raise HTTPException(404, "Not found")
+    fp = ROOT_DIR / "passaroo_screenshots.zip"
+    return FileResponse(fp, media_type="application/zip",
+                        filename="passaroo_screenshots_all.zip")
+
+@app.get("/api/_dl/ios/{key}", include_in_schema=False)
+async def dl_ios(key: str):
+    if key != "passaroo-2026-screenshots-bundle":
+        raise HTTPException(404, "Not found")
+    fp = ROOT_DIR / "passaroo_ios.zip"
+    return FileResponse(fp, media_type="application/zip",
+                        filename="passaroo_ios_screenshots.zip")
+
+@app.get("/api/_dl/android/{key}", include_in_schema=False)
+async def dl_android(key: str):
+    if key != "passaroo-2026-screenshots-bundle":
+        raise HTTPException(404, "Not found")
+    fp = ROOT_DIR / "passaroo_android.zip"
+    return FileResponse(fp, media_type="application/zip",
+                        filename="passaroo_android_screenshots.zip")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
