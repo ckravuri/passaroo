@@ -2281,6 +2281,38 @@ async def dl_seo_iphone65(key: str):
     return FileResponse(fp, media_type="application/zip",
                         filename="passaroo_seo_iphone65_screenshots.zip")
 
+@app.get("/api/_dl/seo-ipad13/{key}", include_in_schema=False)
+async def dl_seo_ipad13(key: str):
+    if key != "passaroo-2026-screenshots-bundle":
+        raise HTTPException(404, "Not found")
+    fp = ROOT_DIR / "passaroo_seo_ipad13.zip"
+    return FileResponse(fp, media_type="application/zip",
+                        filename="passaroo_seo_ipad13_screenshots.zip")
+
+@app.get("/api/_dl/seo-android-phone/{key}", include_in_schema=False)
+async def dl_seo_android_phone(key: str):
+    if key != "passaroo-2026-screenshots-bundle":
+        raise HTTPException(404, "Not found")
+    fp = ROOT_DIR / "passaroo_seo_android_phone.zip"
+    return FileResponse(fp, media_type="application/zip",
+                        filename="passaroo_seo_android_phone_screenshots.zip")
+
+@app.get("/api/_dl/seo-android-tablet/{key}", include_in_schema=False)
+async def dl_seo_android_tablet(key: str):
+    if key != "passaroo-2026-screenshots-bundle":
+        raise HTTPException(404, "Not found")
+    fp = ROOT_DIR / "passaroo_seo_android_tablet.zip"
+    return FileResponse(fp, media_type="application/zip",
+                        filename="passaroo_seo_android_tablet_screenshots.zip")
+
+@app.get("/api/_dl/seo-all/{key}", include_in_schema=False)
+async def dl_seo_all(key: str):
+    if key != "passaroo-2026-screenshots-bundle":
+        raise HTTPException(404, "Not found")
+    fp = ROOT_DIR / "passaroo_seo_all.zip"
+    return FileResponse(fp, media_type="application/zip",
+                        filename="passaroo_seo_all_screenshots.zip")
+
 @app.get("/api/_dl/seo-iphone65/preview/{name}", include_in_schema=False)
 async def dl_seo_iphone65_preview(name: str):
     """Inline preview of a single SEO screenshot (for browser viewing)."""

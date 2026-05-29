@@ -72,9 +72,14 @@ export default function LoginScreen() {
   const onMicrosoft = () => runOAuth("microsoft", signInMicrosoft);
   // Real Apple Sign-In button only renders on iOS (Apple's native button via expo-apple-authentication).
   // On web preview we render a visual Apple-styled button for App Store screenshot purposes.
-  // Android intentionally has no Apple button (Google Play policy).
+  // Android intentionally has no Apple button (Google Play policy) — detected via UA on web preview.
   const isApple = Platform.OS === "ios";
   const isWebPreview = Platform.OS === "web";
+  const isAndroidWeb =
+    isWebPreview &&
+    typeof navigator !== "undefined" &&
+    /android/i.test(navigator.userAgent || "");
+  const showAppleWeb = isWebPreview && !isAndroidWeb;
 
   return (
     <SafeAreaView style={styles.container} testID="login-screen">
@@ -166,7 +171,7 @@ export default function LoginScreen() {
 
           {/* Visual Apple button for web preview only — real Apple Sign-In uses the
               native AppleAuthenticationButton on iOS. Hidden on Android per Google Play. */}
-          {isWebPreview && (
+          {showAppleWeb && (
             <TouchableOpacity
               testID="auth-apple-web"
               style={[styles.oauthBtn, { marginTop: 12, backgroundColor: "#000", borderColor: "#000" }]}
