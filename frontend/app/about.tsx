@@ -3,8 +3,19 @@ import { useRouter } from "expo-router";
 import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
+import Constants from "expo-constants";
 
 import { colors, DISCLAIMER, IMAGES, radius, spacing, typography } from "@/src/theme";
+
+// Dynamic build info — read from app.json at build/runtime.
+const APP_VERSION =
+  Constants.expoConfig?.version ??
+  (Constants.manifest as any)?.version ??
+  "1.0.0";
+const BUILD_NUMBER =
+  Constants.expoConfig?.ios?.buildNumber ??
+  Constants.expoConfig?.android?.versionCode?.toString() ??
+  "1";
 
 export default function About() {
   const router = useRouter();
@@ -41,6 +52,14 @@ export default function About() {
             Exam questions are drawn from a static, human-curated bank.
           </Text>
         </View>
+
+        <View style={styles.versionBlock}>
+          <Text style={styles.versionLabel}>Passaroo</Text>
+          <Text style={styles.versionValue} testID="app-version">
+            Version {APP_VERSION} (build {BUILD_NUMBER})
+          </Text>
+          <Text style={styles.versionCopyright}>© {new Date().getFullYear()} Passaroo · Made in Australia 🇦🇺</Text>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -63,4 +82,27 @@ const styles = StyleSheet.create({
   },
   cardTitle: { ...typography.h3, fontSize: 17 },
   cardText: { ...typography.body, color: colors.textSecondary, lineHeight: 20 },
+  versionBlock: {
+    alignItems: "center",
+    marginTop: spacing.lg,
+    paddingTop: spacing.md,
+    gap: 4,
+  },
+  versionLabel: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: colors.textPrimary,
+    letterSpacing: 0.5,
+  },
+  versionValue: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    fontWeight: "600",
+  },
+  versionCopyright: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    opacity: 0.7,
+    marginTop: 4,
+  },
 });

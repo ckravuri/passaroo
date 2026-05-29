@@ -7,9 +7,9 @@ from typing import Dict, Any, List
 # Monetary configuration (AUD, in cents to avoid float math)
 PRICING = {
     "premium_monthly": {"amount_cents": 799, "currency": "AUD"},
-    "premium_yearly":  {"amount_cents": 7670, "currency": "AUD"},   # ~20% off → 7.99*12*0.8 ≈ 76.70
+    "premium_yearly":  {"amount_cents": 7699, "currency": "AUD"},   # $76.99 — App Store pricing tier (≈20% off)
     "pro_monthly":     {"amount_cents": 1499, "currency": "AUD"},
-    "pro_yearly":      {"amount_cents": 14390, "currency": "AUD"},  # ~20% off → 14.99*12*0.8 ≈ 143.90
+    "pro_yearly":      {"amount_cents": 14499, "currency": "AUD"},  # $144.99 — App Store pricing tier (≈20% off)
 }
 
 # RevenueCat Product / SKU identifiers — MUST match what you create in App Store Connect & Google Play
@@ -130,11 +130,11 @@ def public_plans_payload() -> Dict[str, Any]:
             "premium_yearly": {
                 "sku": SKUS["premium_yearly"],
                 "price_cents": PRICING["premium_yearly"]["amount_cents"],
-                "price_display": "$76.70",
+                "price_display": "$76.99",
                 "period": "year",
                 "tier": "premium",
                 "savings_pct": 20,
-                "monthly_equivalent": "$6.39",
+                "monthly_equivalent": "$6.42",
             },
             "pro_monthly": {
                 "sku": SKUS["pro_monthly"],
@@ -146,11 +146,11 @@ def public_plans_payload() -> Dict[str, Any]:
             "pro_yearly": {
                 "sku": SKUS["pro_yearly"],
                 "price_cents": PRICING["pro_yearly"]["amount_cents"],
-                "price_display": "$143.90",
+                "price_display": "$144.99",
                 "period": "year",
                 "tier": "pro",
                 "savings_pct": 20,
-                "monthly_equivalent": "$11.99",
+                "monthly_equivalent": "$12.08",
             },
         },
         "tiers": {

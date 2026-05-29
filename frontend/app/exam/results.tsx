@@ -92,7 +92,20 @@ export default function Results() {
   };
 
   return (
-    <SafeAreaView style={styles.container} testID="results-screen">
+    <SafeAreaView style={styles.container} testID="results-screen" edges={["top"]}>
+      <View style={styles.header}>
+        <TouchableOpacity
+          onPress={() => router.replace("/(tabs)")}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          testID="results-back-top"
+          accessibilityLabel="Back to home"
+          accessibilityRole="button"
+        >
+          <Ionicons name="arrow-back" size={26} color={colors.textPrimary} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle} numberOfLines={1}>Results</Text>
+        <View style={{ width: 26 }} />
+      </View>
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={[styles.heroCard, { backgroundColor: data.passed ? colors.correct : colors.wrong }]}>
           <Image source={{ uri: IMAGES.badge }} style={{ width: 90, height: 90 }} resizeMode="contain" />
@@ -188,6 +201,17 @@ export default function Results() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    backgroundColor: colors.bg,
+    borderBottomWidth: 2,
+    borderBottomColor: colors.border,
+  },
+  headerTitle: { ...typography.h2, fontSize: 20 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg, padding: 24 },
   scroll: { padding: spacing.lg, gap: spacing.md, paddingBottom: 60 },
   heroCard: {
