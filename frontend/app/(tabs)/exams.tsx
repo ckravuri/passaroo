@@ -48,6 +48,28 @@ export default function Exams() {
     })();
   }, []);
 
+  // Filter families/categories by user's subscriptions (so they only see relevant exams)
+  const subs = (user?.exam_subscriptions || []) as Array<{ family: string; state: string | null; category_id: string }>;
+  const subFamilies = new Set(subs.map((s) => s.family));
+  const subStatesByFamily: Record<string, Set<string>> = {};
+  for (const s of subs) {
+    if (!s.family) continue;
+    if (!subStatesByFamily[s.family]) subStatesByFamily[s.family] = new Set();
+    if (s.state) subStatesByFamily[s.family].add(s.state);
+  }
+  const visibleFamilies: Family[] = subs.length
+    ? families
+        .filter((f) => subFamilies.has(f.id))
+        .map((f) => {
+          // For state-specific families, only show the user's chosen states
+          const states = subStatesByFamily[f.id];
+          if (states && states.size > 0) {
+            return { ...f, categories: f.categories.filter((c) => !c.state || states.has(c.state)) };
+          }
+          return f;
+        })
+    : families; // legacy users with no subscriptions yet — show everything
+
   const toggle = (fid: string) => setExpanded((s) => ({ ...s, [fid]: !s[fid] }));
 
   const goExam = (id: string) =>

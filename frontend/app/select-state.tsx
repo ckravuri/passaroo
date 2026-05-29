@@ -26,6 +26,8 @@ export default function SelectState() {
   const { user, refresh } = useAuth();
   const params = useLocalSearchParams<{ from?: string }>();
   const isFromSettings = params.from === "settings";
+  const isAdding = params.from === "add";
+  const family = (params as any).family as string | undefined;
   const [selected, setSelected] = useState<string | null>(user?.state ?? null);
   const [saving, setSaving] = useState(false);
 
@@ -36,13 +38,28 @@ export default function SelectState() {
     }
     setSaving(true);
     try {
-      await api("/user/profile", {
-        method: "PATCH",
-        body: { state: selected },
-      });
+      if (family) {
+        // New onboarding flow: subscribe to exam (driver knows family+state)
+        await api("/user/exams/subscribe", {
+          method: "POST",
+          body: { family, state: selected, set_primary: !isAdding },
+        });
+      } else {
+        // Legacy / settings path: just update state on profile
+        await api("/user/profile", {
+          method: "PATCH",
+          body: { state: selected },
+        });
+      }
       await refresh();
       if (isFromSettings) router.back();
-      else router.replace("/(tabs)");
+      else if (family) {
+        Alert.alert(
+          "🦘 You're in!",
+          `${selected} added to your study plan. Let's go!`,
+          [{ text: "Start studying", onPress: () => router.replace("/(tabs)") }],
+        );
+      } else router.replace("/(tabs)");
     } catch (e: any) {
       Alert.alert("Couldn't save", e.message);
     } finally {

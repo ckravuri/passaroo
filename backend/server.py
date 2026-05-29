@@ -80,6 +80,9 @@ class User(BaseModel):
     fair_usage_violations: int = 0
     suspended: bool = False
     suspension_reason: Optional[str] = None
+    # ── Multi-exam subscriptions (new in Phase 6) ────────────
+    # Each entry: {family, state?, category_id, primary, subscribed_at}
+    exam_subscriptions: List[Dict[str, Any]] = Field(default_factory=list)
     # ── Coupon redemption ────────────────────────────────────
     redeemed_coupons: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -2065,6 +2068,158 @@ async def link_revenuecat_user(body: RCLinkBody, authorization: Optional[str] = 
         {"$set": {"rc_app_user_id": body.rc_app_user_id}},
     )
     return {"ok": True}
+
+
+# ============================================================
+# Phase 6: Multi-exam subscriptions (Sep 2026)
+# Users now subscribe to 1+ exam families, with conditional state
+# selection only for state-specific families. Replaces the old
+# single primary_category_id flow.
+# ============================================================
+
+def _resolve_category(family: str, state: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Find the matching CATEGORIES entry for (family, state)."""
+    fam = next((f for f in FAMILIES if f["id"] == family), None)
+    if not fam:
+        return None
+    matches = [c for c in CATEGORIES if c["family"] == family]
+    if not matches:
+        return None
+    # If family is state-specific, require a state match
+    if any(c.get("state") for c in matches):
+        if not state:
+            return None
+        return next((c for c in matches if c.get("state") == state.upper()), None)
+    # National exam (no state) — return first
+    return matches[0]
+
+
+def _family_is_state_specific(family: str) -> bool:
+    return any(c.get("state") for c in CATEGORIES if c["family"] == family)
+
+
+class SubscribeExamBody(BaseModel):
+    family: str
+    state: Optional[str] = None
+    set_primary: bool = True
+
+
+@api.post("/user/exams/subscribe")
+async def subscribe_exam(body: SubscribeExamBody, authorization: Optional[str] = Header(None),
+                         x_device_id: Optional[str] = None):
+    user = await get_current_user(authorization, x_device_id)
+    cat = _resolve_category(body.family, body.state)
+    if not cat:
+        if _family_is_state_specific(body.family):
+            raise HTTPException(400, f"State required for family '{body.family}'")
+        raise HTTPException(404, f"Unknown family '{body.family}'")
+
+    subs = list(user.get("exam_subscriptions") or [])
+    existing = next((s for s in subs if s["category_id"] == cat["id"]), None)
+    if existing:
+        # Already subscribed — just update primary flag if requested
+        if body.set_primary:
+            for s in subs:
+                s["primary"] = (s["category_id"] == cat["id"])
+            await db.users.update_one(
+                {"user_id": user["user_id"]},
+                {"$set": {
+                    "exam_subscriptions": subs,
+                    "primary_category_id": cat["id"],
+                    "state": cat.get("state") or user.get("state"),
+                }},
+            )
+        return {"ok": True, "already_subscribed": True, "category": cat}
+
+    # Add new subscription
+    is_primary = body.set_primary or not subs  # auto-primary if first
+    if is_primary:
+        for s in subs:
+            s["primary"] = False
+    subs.append({
+        "family": body.family,
+        "state": cat.get("state"),
+        "category_id": cat["id"],
+        "primary": is_primary,
+        "subscribed_at": now(),
+    })
+    update: Dict[str, Any] = {"exam_subscriptions": subs}
+    if is_primary:
+        update["primary_category_id"] = cat["id"]
+        if cat.get("state"):
+            update["state"] = cat["state"]
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+    return {"ok": True, "added": True, "category": cat, "is_primary": is_primary}
+
+
+@api.delete("/user/exams/subscribe/{category_id}")
+async def unsubscribe_exam(category_id: str,
+                           authorization: Optional[str] = Header(None),
+                           x_device_id: Optional[str] = None):
+    user = await get_current_user(authorization, x_device_id)
+    subs = list(user.get("exam_subscriptions") or [])
+    new_subs = [s for s in subs if s["category_id"] != category_id]
+    if len(new_subs) == len(subs):
+        raise HTTPException(404, "Subscription not found")
+    # If we removed the primary, promote the first remaining
+    update: Dict[str, Any] = {"exam_subscriptions": new_subs}
+    removed_primary = any(s.get("primary") and s["category_id"] == category_id for s in subs)
+    if removed_primary and new_subs:
+        new_subs[0]["primary"] = True
+        update["primary_category_id"] = new_subs[0]["category_id"]
+        update["state"] = new_subs[0].get("state")
+    elif not new_subs:
+        update["primary_category_id"] = None
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+    return {"ok": True, "removed": category_id, "remaining": len(new_subs)}
+
+
+class SetPrimaryBody(BaseModel):
+    category_id: str
+
+
+@api.patch("/user/exams/primary")
+async def set_primary_exam(body: SetPrimaryBody,
+                           authorization: Optional[str] = Header(None),
+                           x_device_id: Optional[str] = None):
+    user = await get_current_user(authorization, x_device_id)
+    subs = list(user.get("exam_subscriptions") or [])
+    if not any(s["category_id"] == body.category_id for s in subs):
+        raise HTTPException(404, "Not subscribed to that exam")
+    target_state = None
+    for s in subs:
+        s["primary"] = (s["category_id"] == body.category_id)
+        if s["primary"]:
+            target_state = s.get("state")
+    update: Dict[str, Any] = {
+        "exam_subscriptions": subs,
+        "primary_category_id": body.category_id,
+    }
+    if target_state:
+        update["state"] = target_state
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+    return {"ok": True, "primary": body.category_id}
+
+
+@api.get("/user/exams")
+async def list_my_exams(authorization: Optional[str] = Header(None),
+                        x_device_id: Optional[str] = None):
+    user = await get_current_user(authorization, x_device_id)
+    subs = user.get("exam_subscriptions") or []
+    # Enrich with full category info for the frontend
+    enriched = []
+    for s in subs:
+        cat = next((c for c in CATEGORIES if c["id"] == s["category_id"]), None)
+        if cat:
+            enriched.append({**s, "category": {
+                "id": cat["id"], "name": cat["name"], "short_name": cat["short_name"],
+                "icon": cat["icon"], "color": cat["color"], "family": cat["family"],
+                "description": cat["description"], "state": cat.get("state"),
+            }})
+    return {"subscriptions": enriched, "count": len(enriched)}
+
+
+# ---------- End Phase 6 ----------
 
 
 # ---------- End Phase 5 ----------

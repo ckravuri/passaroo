@@ -16,7 +16,10 @@ export default function Index() {
     );
   }
   if (!user) return <Redirect href="/onboarding" />;
-  if (!user.state) return <Redirect href="/select-state" />;
+  // New onboarding flow — must pick at least one exam family first
+  const hasSubs = (user.exam_subscriptions && user.exam_subscriptions.length > 0);
+  if (!hasSubs && !user.state) return <Redirect href="/select-exam" />;
+  // Legacy fallback: if old user has state but no subscriptions yet, that's fine — dashboard handles it
   return <Redirect href="/(tabs)" />;
 }
 
