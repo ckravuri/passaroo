@@ -2273,6 +2273,23 @@ async def dl_android(key: str):
     return FileResponse(fp, media_type="application/zip",
                         filename="passaroo_android_screenshots.zip")
 
+@app.get("/api/_dl/seo-iphone65/{key}", include_in_schema=False)
+async def dl_seo_iphone65(key: str):
+    if key != "passaroo-2026-screenshots-bundle":
+        raise HTTPException(404, "Not found")
+    fp = ROOT_DIR / "passaroo_seo_iphone65.zip"
+    return FileResponse(fp, media_type="application/zip",
+                        filename="passaroo_seo_iphone65_screenshots.zip")
+
+@app.get("/api/_dl/seo-iphone65/preview/{name}", include_in_schema=False)
+async def dl_seo_iphone65_preview(name: str):
+    """Inline preview of a single SEO screenshot (for browser viewing)."""
+    safe = name.replace("..", "").replace("/", "")
+    fp = Path("/tmp/passaroo_screenshots/seo") / safe
+    if not fp.exists() or not safe.endswith(".png"):
+        raise HTTPException(404, "Not found")
+    return FileResponse(fp, media_type="image/png")
+
 
 app.add_middleware(
     CORSMiddleware,
