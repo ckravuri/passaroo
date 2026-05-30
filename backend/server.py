@@ -168,7 +168,7 @@ def to_aware(dt: Any) -> datetime:
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
-    x_device_id: Optional[str] = None,
+    x_device_id: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Not authenticated")
@@ -191,15 +191,25 @@ async def get_current_user(
     if user.get("banned"):
         raise HTTPException(403, "Account banned.")
 
-    # ── Single-device enforcement ──────────────────────────────────
-    # If the session has a bound device but a different one is calling, kick.
+    # ── Multi-device: enforce that the bound device_id matches ─────
+    # Each session is bound to ONE device_id; using the token from a
+    # different device is a token-sharing attempt → reject.
     bound = session.get("device_id")
     if bound and x_device_id and x_device_id != bound:
-        # Different device using this token — likely token sharing or hijack.
         raise HTTPException(401, {
             "code": "DEVICE_MISMATCH",
             "message": "Session bound to another device. Please log in again.",
         })
+
+    # ── Touch last_used_at (best-effort, fire-and-forget) ──────────
+    try:
+        await db.user_sessions.update_one(
+            {"session_token": token},
+            {"$set": {"last_used_at": now()}},
+        )
+    except Exception:
+        pass
+
     return user
 
 
@@ -256,24 +266,116 @@ async def update_streak_and_xp(user_id: str, xp_gain: int) -> None:
     )
 
 
-async def issue_session(user_id: str, device_id: Optional[str] = None) -> str:
-    """Issue a new session. Enforces ONE active device per account by killing prior sessions."""
-    token = f"sess_{uuid.uuid4().hex}{uuid.uuid4().hex}"
-    await db.user_sessions.delete_many({"user_id": user_id})  # one active device session
-    await db.user_sessions.insert_one(
-        {
-            "session_token": token,
-            "user_id": user_id,
-            "device_id": device_id,
-            "created_at": now(),
-            "expires_at": now() + timedelta(days=7),
-        }
-    )
+async def issue_session(user_id: str, device_id: Optional[str] = None,
+                        ip_addr: Optional[str] = None) -> str:
+    """
+    Issue a new session with multi-device support + anti-fraud tracking.
+
+    Policy:
+      • guest=1 / free=2 / premium=3 / pro=3 concurrent sessions max
+      • Same device_id re-login REPLACES that device's existing session
+      • At cap, evict OLDEST sessions (LRU) — sharer's friends kick out original user
+      • Track every device_id seen via user_devices collection (fraud trail)
+      • Auto-flag accounts with >7 unique device_ids in 30 days as is_suspicious
+      • Cap NEW device_ids per account per 24h (default 5) — anti-swap-test
+    """
+    SESSION_CAP_BY_PLAN = {"guest": 1, "free": 2, "premium": 3, "pro": 3}
+    NEW_DEVICE_DAILY_CAP = 5
+    FRAUD_THRESHOLD_30D = 7  # distinct device_ids in last 30 days
+
+    user = await db.users.find_one({"user_id": user_id}, {"plan": 1, "is_admin": 1})
+    plan = (user or {}).get("plan", "free")
+    is_admin = bool((user or {}).get("is_admin"))
+    cap = SESSION_CAP_BY_PLAN.get(plan, 2)
+    if is_admin:
+        cap = 10  # admins get more leeway for testing across devices
+
+    # ── Anti-fraud: rate-limit NEW devices per account per 24h ─────
+    if device_id and not is_admin:
+        ts_24h = now() - timedelta(hours=24)
+        existing_dev = await db.user_devices.find_one(
+            {"user_id": user_id, "device_id": device_id}, {"_id": 0, "device_id": 1}
+        )
+        if not existing_dev:
+            new_devices_24h = await db.user_devices.count_documents({
+                "user_id": user_id,
+                "first_seen_at": {"$gte": ts_24h},
+            })
+            if new_devices_24h >= NEW_DEVICE_DAILY_CAP:
+                await db.abuse_log.insert_one({
+                    "user_id": user_id,
+                    "kind": "device_swap_burst",
+                    "device_id": device_id,
+                    "ip": ip_addr,
+                    "at": now(),
+                })
+                raise HTTPException(429, {
+                    "code": "TOO_MANY_DEVICES",
+                    "message": "Too many new devices on this account today. "
+                               "Try again in 24 hours or contact support.",
+                })
+
+    # ── Same-device re-login: replace the prior session for that device ──
     if device_id:
+        await db.user_sessions.delete_many({"user_id": user_id, "device_id": device_id})
+
+    # ── Concurrent-session cap (LRU evict) ──────────────────────────
+    existing = await db.user_sessions.count_documents({"user_id": user_id})
+    if existing >= cap:
+        to_evict = existing - cap + 1
+        old = await db.user_sessions.find(
+            {"user_id": user_id}, {"_id": 0, "session_token": 1}
+        ).sort("created_at", 1).limit(to_evict).to_list(to_evict)
+        if old:
+            await db.user_sessions.delete_many(
+                {"session_token": {"$in": [s["session_token"] for s in old]}}
+            )
+
+    # ── Insert new session ─────────────────────────────────────────
+    token = f"sess_{uuid.uuid4().hex}{uuid.uuid4().hex}"
+    await db.user_sessions.insert_one({
+        "session_token": token,
+        "user_id": user_id,
+        "device_id": device_id,
+        "ip_addr": ip_addr,
+        "created_at": now(),
+        "last_used_at": now(),
+        "expires_at": now() + timedelta(days=7),
+    })
+
+    # ── Device tracking (fraud trail) ──────────────────────────────
+    if device_id:
+        await db.user_devices.update_one(
+            {"user_id": user_id, "device_id": device_id},
+            {
+                "$set": {"last_login_at": now(), "last_ip": ip_addr},
+                "$setOnInsert": {"first_seen_at": now()},
+                "$inc": {"login_count": 1},
+            },
+            upsert=True,
+        )
         await db.users.update_one(
             {"user_id": user_id},
             {"$set": {"active_device_id": device_id, "last_login_at": now()}},
         )
+
+    # ── Auto-flag fraud: many distinct devices in 30 days ──────────
+    if not is_admin:
+        ts_30d = now() - timedelta(days=30)
+        distinct_30d = await db.user_devices.count_documents({
+            "user_id": user_id,
+            "first_seen_at": {"$gte": ts_30d},
+        })
+        if distinct_30d >= FRAUD_THRESHOLD_30D:
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$set": {
+                    "is_suspicious": True,
+                    "suspicious_reason": f"{distinct_30d} new devices in last 30 days",
+                    "suspicious_flagged_at": now(),
+                }},
+            )
+
     return token
 
 
@@ -352,6 +454,19 @@ async def upsert_user_by_email(email: str, name: str, picture: Optional[str], pr
     return user_doc
 
 
+def client_ip(request: Optional[Request]) -> Optional[str]:
+    """Extract caller IP, preferring X-Forwarded-For (Railway proxy)."""
+    if not request:
+        return None
+    xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    try:
+        return request.client.host if request.client else None
+    except Exception:
+        return None
+
+
 # ---------- Routes: Auth ----------
 @api.get("/")
 async def root():
@@ -359,7 +474,8 @@ async def root():
 
 
 @api.post("/auth/email/signup")
-async def email_signup(body: EmailSignupBody, x_device_id: Optional[str] = Header(None)):
+async def email_signup(body: EmailSignupBody, request: Request,
+                       x_device_id: Optional[str] = Header(None)):
     email = body.email.lower()
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
@@ -375,14 +491,16 @@ async def email_signup(body: EmailSignupBody, x_device_id: Optional[str] = Heade
     ).model_dump()
     user_doc["password_hash"] = hash_password(body.password)
     await db.users.insert_one(user_doc)
-    token = await issue_session(user_doc["user_id"], device_id=x_device_id)
+    token = await issue_session(user_doc["user_id"], device_id=x_device_id,
+                                ip_addr=client_ip(request))
     user_doc.pop("password_hash", None)
     user_doc.pop("_id", None)
     return {"session_token": token, "user": user_doc}
 
 
 @api.post("/auth/email/login")
-async def email_login(body: EmailLoginBody, x_device_id: Optional[str] = Header(None)):
+async def email_login(body: EmailLoginBody, request: Request,
+                      x_device_id: Optional[str] = Header(None)):
     user = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
     if not user or not user.get("password_hash") or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(401, "Invalid email or password")
@@ -391,13 +509,15 @@ async def email_login(body: EmailLoginBody, x_device_id: Optional[str] = Header(
             "code": "ACCOUNT_SUSPENDED",
             "reason": user.get("suspension_reason") or "Account suspended.",
         })
-    token = await issue_session(user["user_id"], device_id=x_device_id)
+    token = await issue_session(user["user_id"], device_id=x_device_id,
+                                ip_addr=client_ip(request))
     user.pop("password_hash", None)
     return {"session_token": token, "user": user}
 
 
 @api.post("/auth/google/session")
-async def google_session(body: GoogleSessionBody, x_device_id: Optional[str] = Header(None)):
+async def google_session(body: GoogleSessionBody, request: Request,
+                         x_device_id: Optional[str] = Header(None)):
     # Verify session_id with Emergent
     async with httpx.AsyncClient(timeout=15) as cx:
         r = await cx.get(
@@ -411,15 +531,17 @@ async def google_session(body: GoogleSessionBody, x_device_id: Optional[str] = H
         email=data["email"], name=data.get("name", "User"),
         picture=data.get("picture"), provider="google",
     )
-    token = await issue_session(user["user_id"], device_id=x_device_id)
+    token = await issue_session(user["user_id"], device_id=x_device_id,
+                                ip_addr=client_ip(request))
     user.pop("password_hash", None)
     user.pop("_id", None)
     return {"session_token": token, "user": user}
 
 
 @api.get("/auth/me")
-async def get_me(authorization: Optional[str] = Header(None)):
-    user = await get_current_user(authorization)
+async def get_me(authorization: Optional[str] = Header(None),
+                 x_device_id: Optional[str] = Header(None)):
+    user = await get_current_user(authorization, x_device_id)
     user.pop("password_hash", None)
     return {"user": user, "limits": plan_limits(user.get("plan", "free"))}
 
@@ -1087,6 +1209,106 @@ async def admin_ban(body: BanBody, authorization: Optional[str] = Header(None)):
     return {"ok": True}
 
 
+# ─────────── Device / Anti-Fraud Endpoints ───────────
+@api.get("/user/devices")
+async def list_my_devices(authorization: Optional[str] = Header(None),
+                          x_device_id: Optional[str] = Header(None)):
+    """List all devices ever logged in to my account."""
+    user = await get_current_user(authorization, x_device_id)
+    devices = await db.user_devices.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0},
+    ).sort("last_login_at", -1).to_list(50)
+    sessions = await db.user_sessions.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0, "session_token": 0, "ip_addr": 0},
+    ).to_list(20)
+    active_device_ids = {s.get("device_id") for s in sessions if s.get("device_id")}
+    for d in devices:
+        d["is_active"] = d.get("device_id") in active_device_ids
+        d["is_current"] = d.get("device_id") == x_device_id
+    return {"devices": devices, "active_sessions": len(sessions)}
+
+
+@api.post("/user/devices/revoke")
+async def revoke_my_device(body: Dict[str, Any],
+                           authorization: Optional[str] = Header(None),
+                           x_device_id: Optional[str] = Header(None)):
+    """User-initiated logout of a specific device (or all-other-devices)."""
+    user = await get_current_user(authorization, x_device_id)
+    target_device = body.get("device_id")
+    revoke_all_others = bool(body.get("all_others"))
+    q: Dict[str, Any] = {"user_id": user["user_id"]}
+    if revoke_all_others and x_device_id:
+        q["device_id"] = {"$ne": x_device_id}
+    elif target_device:
+        q["device_id"] = target_device
+    else:
+        raise HTTPException(400, "Provide device_id or all_others=true")
+    res = await db.user_sessions.delete_many(q)
+    return {"revoked": res.deleted_count}
+
+
+@api.get("/admin/users/{user_id}/devices")
+async def admin_user_devices(user_id: str,
+                             authorization: Optional[str] = Header(None),
+                             x_device_id: Optional[str] = Header(None)):
+    """Admin: inspect a user's full device history for fraud analysis."""
+    await require_admin(authorization, x_device_id)
+    user = await db.users.find_one(
+        {"user_id": user_id},
+        {"_id": 0, "password_hash": 0},
+    )
+    if not user:
+        raise HTTPException(404, "User not found")
+    devices = await db.user_devices.find(
+        {"user_id": user_id}, {"_id": 0},
+    ).sort("last_login_at", -1).to_list(200)
+    sessions = await db.user_sessions.find(
+        {"user_id": user_id}, {"_id": 0, "session_token": 0},
+    ).to_list(50)
+    abuse = await db.abuse_log.find(
+        {"user_id": user_id}, {"_id": 0},
+    ).sort("at", -1).limit(50).to_list(50)
+    # Stats
+    ts_30d = now() - timedelta(days=30)
+    distinct_30d = sum(1 for d in devices if to_aware(d.get("first_seen_at", now())) >= ts_30d)
+    return {
+        "user": user,
+        "devices": devices,
+        "active_sessions": sessions,
+        "abuse_log": abuse,
+        "stats": {
+            "total_devices": len(devices),
+            "new_devices_30d": distinct_30d,
+            "active_sessions": len(sessions),
+            "is_suspicious": user.get("is_suspicious", False),
+        },
+    }
+
+
+@api.post("/admin/users/{user_id}/revoke-sessions")
+async def admin_revoke_user_sessions(user_id: str,
+                                     authorization: Optional[str] = Header(None),
+                                     x_device_id: Optional[str] = Header(None)):
+    """Admin: force-revoke all sessions of a user (suspected fraud)."""
+    await require_admin(authorization, x_device_id)
+    res = await db.user_sessions.delete_many({"user_id": user_id})
+    return {"revoked": res.deleted_count}
+
+
+@api.get("/admin/suspicious-users")
+async def admin_suspicious_users(authorization: Optional[str] = Header(None),
+                                 x_device_id: Optional[str] = Header(None)):
+    """Admin: list accounts auto-flagged for suspicious multi-device activity."""
+    await require_admin(authorization, x_device_id)
+    flagged = await db.users.find(
+        {"is_suspicious": True},
+        {"_id": 0, "password_hash": 0},
+    ).sort("suspicious_flagged_at", -1).limit(100).to_list(100)
+    return {"users": flagged, "count": len(flagged)}
+
+
 @api.get("/admin/stats")
 async def admin_stats(authorization: Optional[str] = Header(None)):
     """Detailed admin stats: per-category counts, signups today/7d/30d, attempts trend."""
@@ -1154,6 +1376,11 @@ async def startup():
     await db.guest_attempts.create_index("device_id", unique=True)
     await db.iap_events.create_index("at")
     await db.abuse_log.create_index([("user_id", 1), ("at", -1)])
+    # Multi-device fraud tracking
+    await db.user_devices.create_index([("user_id", 1), ("device_id", 1)], unique=True)
+    await db.user_devices.create_index([("user_id", 1), ("first_seen_at", -1)])
+    await db.user_sessions.create_index([("user_id", 1), ("device_id", 1)])
+    await db.user_sessions.create_index([("user_id", 1), ("created_at", -1)])
 
     # Migration: legacy "dkt" category → "dkt_nsw"
     legacy_count = await db.questions.count_documents({"category_id": "dkt"})
@@ -1264,7 +1491,8 @@ class AppleTokenBody(BaseModel):
 
 
 @api.post("/auth/apple/token")
-async def apple_signin(body: AppleTokenBody, x_device_id: Optional[str] = Header(None)):
+async def apple_signin(body: AppleTokenBody, request: Request,
+                       x_device_id: Optional[str] = Header(None)):
     """Verify Apple identity token. Apple JWTs are signed by Apple — for MVP we
     decode (un-verified) to extract email and sub. In production add JWKS verification."""
     try:
@@ -1280,7 +1508,8 @@ async def apple_signin(body: AppleTokenBody, x_device_id: Optional[str] = Header
         email = f"apple_{sub}@private.passaroo.app"
     name = body.full_name or email.split("@")[0]
     user = await upsert_user_by_email(email=email, name=name, picture=None, provider="apple")
-    token = await issue_session(user["user_id"], device_id=x_device_id)
+    token = await issue_session(user["user_id"], device_id=x_device_id,
+                                ip_addr=client_ip(request))
     user.pop("password_hash", None)
     user.pop("_id", None)
     return {"session_token": token, "user": user}
@@ -1292,7 +1521,8 @@ class MicrosoftTokenBody(BaseModel):
 
 
 @api.post("/auth/microsoft/token")
-async def microsoft_signin(body: MicrosoftTokenBody, x_device_id: Optional[str] = Header(None)):
+async def microsoft_signin(body: MicrosoftTokenBody, request: Request,
+                           x_device_id: Optional[str] = Header(None)):
     """Verify Microsoft access_token by calling Graph /me."""
     async with httpx.AsyncClient(timeout=15) as cx:
         r = await cx.get(
@@ -1307,7 +1537,8 @@ async def microsoft_signin(body: MicrosoftTokenBody, x_device_id: Optional[str] 
         raise HTTPException(401, "Microsoft account missing email")
     name = data.get("displayName") or email.split("@")[0]
     user = await upsert_user_by_email(email=email, name=name, picture=None, provider="microsoft")
-    token = await issue_session(user["user_id"], device_id=x_device_id)
+    token = await issue_session(user["user_id"], device_id=x_device_id,
+                                ip_addr=client_ip(request))
     user.pop("password_hash", None)
     user.pop("_id", None)
     return {"session_token": token, "user": user}

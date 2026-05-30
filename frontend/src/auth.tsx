@@ -70,9 +70,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       const r = await api<{ user: User }>("/auth/me");
       await setUserAndRegister(r.user);
-    } catch {
-      await clearToken();
-      setUser(null);
+    } catch (e: any) {
+      // ONLY clear the token if the server explicitly rejected our auth (401/403).
+      // Transient network errors, timeouts, 5xx, or device-mismatch should NOT
+      // log the user out (otherwise opening the app offline kicks them out).
+      const status = e?.status as number | undefined;
+      const code = e?.detail?.code as string | undefined;
+      const isAuthRejection =
+        status === 401 || status === 403 || code === "DEVICE_MISMATCH";
+      if (isAuthRejection) {
+        await clearToken();
+        setUser(null);
+      }
+      // Otherwise: keep the existing token, leave `user` as-is (might be null on cold start)
+      // The next API call will retry naturally.
     }
   };
 
