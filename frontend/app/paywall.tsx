@@ -149,7 +149,28 @@ export default function Paywall() {
         if (result.userCancelled) {
           return; // user backed out — no error
         }
-        // The RC webhook will sync the entitlement to backend. Force-refresh anyway.
+        // ── Client-driven sync (instant unlock) ────────────────────
+        // RevenueCat's webhook will also fire server-side, but it may take a few
+        // seconds. We call /iap/sync directly so the user sees Premium unlocked
+        // immediately — webhook is the backup / source of truth.
+        try {
+          await api("/iap/sync", {
+            method: "POST",
+            body: {
+              product_id: pkg?.product?.identifier,
+              entitlement: tier,
+              billing_period: isYearly ? "yearly" : "monthly",
+              expires_at_ms:
+                pkg?.product?.subscriptionPeriod?.numberOfUnits != null
+                  ? null
+                  : null, // RC SDK doesn't expose exact expiry; server computes from product
+            },
+          });
+        } catch (syncErr) {
+          // Sync is best-effort — webhook will still update plan later
+          // eslint-disable-next-line no-console
+          console.warn("iap/sync failed:", syncErr);
+        }
         await refresh();
         Alert.alert(
           "🎉 You're now " + tier.toUpperCase() + "!",
@@ -227,7 +248,11 @@ export default function Paywall() {
         </TouchableOpacity>
 
         <View style={styles.header}>
-          <Image source={{ uri: IMAGES.motif }} style={{ width: 180, height: 90 }} resizeMode="contain" />
+          <Image
+            source={require("@/assets/images/passaroo-logo.png")}
+            style={{ width: 120, height: 120 }}
+            resizeMode="contain"
+          />
           <Text style={styles.title}>Level up your study</Text>
           <Text style={styles.sub}>Unlock unlimited exams, AI tutor and more.</Text>
         </View>

@@ -21,13 +21,17 @@ const CAT_NAMES: Record<string, string> = {
 
 export default function Analytics() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
+      setError(null);
       const r = await api<Stats>("/user/stats");
       setStats(r);
-    } catch {}
+    } catch (e: any) {
+      setError(e?.message || "Couldn't load your stats. Pull down to retry.");
+    }
   }, []);
 
   useEffect(() => {
@@ -48,7 +52,18 @@ export default function Analytics() {
       >
         <Text style={styles.h1}>Your Stats</Text>
 
-        {!stats && <Text style={styles.subtle}>Loading…</Text>}
+        {!stats && !error && <Text style={styles.subtle}>Loading…</Text>}
+        {!stats && error && (
+          <View style={{ paddingVertical: spacing.xl, alignItems: "center" }}>
+            <Ionicons name="cloud-offline" size={48} color={colors.textSecondary} />
+            <Text style={[styles.subtle, { textAlign: "center", marginTop: spacing.md }]}>
+              {error}
+            </Text>
+            <Text style={[styles.subtle, { textAlign: "center", marginTop: spacing.xs }]}>
+              Pull down to refresh.
+            </Text>
+          </View>
+        )}
 
         {stats && (
           <>

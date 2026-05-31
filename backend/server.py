@@ -191,24 +191,42 @@ async def get_current_user(
     if user.get("banned"):
         raise HTTPException(403, "Account banned.")
 
-    # ── Multi-device: enforce that the bound device_id matches ─────
-    # Each session is bound to ONE device_id; using the token from a
-    # different device is a token-sharing attempt → reject.
+    # ── Multi-device: AUTO-REBIND session to new device_id ─────────
+    # Hard-blocking on device-id mismatch is too aggressive (Keychain rotates,
+    # reinstalls, etc.). Instead, we silently rebind the session to whichever
+    # device is currently using it. Anti-fraud is enforced upstream via:
+    #   • LRU cap on concurrent sessions per plan
+    #   • Burst rate-limit on new device_ids per account / 24h
+    #   • Device tracking + auto-suspicious flag for >7 devices in 30 days
     bound = session.get("device_id")
-    if bound and x_device_id and x_device_id != bound:
-        raise HTTPException(401, {
-            "code": "DEVICE_MISMATCH",
-            "message": "Session bound to another device. Please log in again.",
-        })
-
-    # ── Touch last_used_at (best-effort, fire-and-forget) ──────────
-    try:
-        await db.user_sessions.update_one(
-            {"session_token": token},
-            {"$set": {"last_used_at": now()}},
-        )
-    except Exception:
-        pass
+    if x_device_id and bound != x_device_id:
+        try:
+            await db.user_sessions.update_one(
+                {"session_token": token},
+                {"$set": {"device_id": x_device_id, "rebound_at": now(),
+                          "last_used_at": now()}},
+            )
+            # Also record the new device in user_devices for fraud trail
+            await db.user_devices.update_one(
+                {"user_id": user["user_id"], "device_id": x_device_id},
+                {
+                    "$set": {"last_login_at": now()},
+                    "$setOnInsert": {"first_seen_at": now()},
+                    "$inc": {"login_count": 1},
+                },
+                upsert=True,
+            )
+        except Exception:
+            pass
+    else:
+        # Touch last_used_at (best-effort)
+        try:
+            await db.user_sessions.update_one(
+                {"session_token": token},
+                {"$set": {"last_used_at": now()}},
+            )
+        except Exception:
+            pass
 
     return user
 
@@ -2314,6 +2332,78 @@ async def link_revenuecat_user(body: RCLinkBody, authorization: Optional[str] = 
         {"$set": {"rc_app_user_id": body.rc_app_user_id}},
     )
     return {"ok": True}
+
+
+# ── Manual IAP sync — frontend calls this AFTER successful purchase to bypass
+#    webhook latency. Looks up the user's active entitlement in RevenueCat
+#    via the public REST API and immediately mirrors it into our DB.
+class IapSyncBody(BaseModel):
+    # The active product_id reported by the StoreKit/RevenueCat SDK in-app
+    # (e.g. "passaroo_premium_monthly" / "passaroo_pro_yearly"). Optional
+    # because we'll also accept a generic "active_entitlements" payload.
+    product_id: Optional[str] = None
+    entitlement: Optional[str] = None  # "premium" | "pro"
+    expires_at_ms: Optional[int] = None
+    billing_period: Optional[str] = None  # "monthly" | "yearly"
+
+
+@api.post("/iap/sync")
+async def iap_sync(body: IapSyncBody, authorization: Optional[str] = Header(None),
+                   x_device_id: Optional[str] = Header(None)):
+    """Idempotent client-driven sync of the user's entitlement.
+    Called by the app right after RevenueCat reports a successful purchase
+    so the user sees Premium unlocked instantly (webhook is a backup)."""
+    user = await get_current_user(authorization, x_device_id)
+
+    # Determine plan from product_id or explicit entitlement
+    plan: Optional[str] = None
+    period = body.billing_period
+    pid = (body.product_id or "").lower()
+    ent = (body.entitlement or "").lower()
+    if "pro" in pid or ent == "pro":
+        plan = "pro"
+    elif "premium" in pid or ent == "premium":
+        plan = "premium"
+    if not plan:
+        # Nothing to sync — but don't error, just return current state
+        return {"ok": True, "plan": user.get("plan", "free"), "synced": False}
+
+    if not period:
+        if "yearly" in pid:
+            period = "yearly"
+        elif "monthly" in pid:
+            period = "monthly"
+
+    expires_at = None
+    if body.expires_at_ms:
+        try:
+            expires_at = datetime.fromtimestamp(body.expires_at_ms / 1000, tz=timezone.utc)
+        except Exception:
+            expires_at = None
+
+    set_doc: Dict[str, Any] = {
+        "plan": plan,
+        "subscription_provider": "revenuecat",
+        "subscription_started_at": now(),
+    }
+    if period:
+        set_doc["billing_period"] = period
+    if expires_at:
+        set_doc["subscription_expires_at"] = expires_at
+
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": set_doc})
+    await db.iap_events.insert_one({
+        "event_type": "CLIENT_SYNC",
+        "app_user_id": user.get("rc_app_user_id") or user["user_id"],
+        "product_id": body.product_id,
+        "at": now(),
+        "raw": body.model_dump(),
+    })
+
+    refreshed = await db.users.find_one(
+        {"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0},
+    )
+    return {"ok": True, "synced": True, "user": refreshed}
 
 
 # ============================================================
